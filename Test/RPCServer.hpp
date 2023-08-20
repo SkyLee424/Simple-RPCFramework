@@ -66,8 +66,13 @@ public:
 
     void start(void);
 
+    // 支持注册普通函数和 std::function 对象
     template <typename Func>
     void registerProcedure(const std::string &name, Func procedure);
+
+    // 支持注册类成员函数
+    template <typename Obj, typename Func>
+    void registerProcedure(const std::string &name, Obj &obj, Func procedure);
 
 private:
     // 处理用户的远程调用，并将返回结果序列化后，返回给用户
@@ -85,6 +90,10 @@ private:
     template <typename Func>
     std::string callProxy(Func f, const std::string &req);
 
+    // 调用类的成员函数
+    template <typename Obj, typename Func>
+    std::string callProxy(Obj &obj, Func f, const std::string &req);
+
     // 调用帮助函数，支持 std::function
     template <typename R, typename ...Args>
     std::string callProxyHelper(std::function<R(Args ...)> f, const std::string &req);
@@ -92,6 +101,10 @@ private:
     // 调用帮助函数，支持普通函数
     template <typename R, typename ...Args>
     std::string callProxyHelper(R(*f)(Args ...), const std::string &req);   
+
+    // 调用帮助函数，支持类的成员函数
+    template <typename R, typename Obj, typename ...Args>
+    std::string callProxyHelper(Obj &obj, R(Obj::*f)(Args...), const std::string &req);
 };
 
 void RPCServer::start(void)
@@ -136,10 +149,23 @@ void RPCServer::registerProcedure(const std::string &name, Func procedure)
     procedures[name] = std::bind(&RPCServer::callProxy<Func>, this, procedure, std::placeholders::_1);
 }
 
+template <typename Obj, typename Func>
+void RPCServer::registerProcedure(const std::string &name, Obj &obj, Func procedure)
+{
+    // 注意，这里需要使用 std::ref 获取 obj 的引用
+    procedures[name] = std::bind(&RPCServer::callProxy<Obj, Func>, this, std::ref(obj), procedure, std::placeholders::_1);
+}
+
 template <typename Func>
 std::string RPCServer::callProxy(Func f, const std::string &req)
 {
     return callProxyHelper(f, req);
+}
+
+template <typename Obj, typename Func>
+std::string RPCServer::callProxy(Obj &obj, Func f, const std::string &req)
+{
+    return callProxyHelper(obj, f, req);
 }
 
 template <typename R, typename ...Args>
@@ -156,4 +182,21 @@ std::string RPCServer::callProxyHelper(R(*f)(Args ...), const std::string &req)
 {
     std::function<R(Args...)> func(f);
     return callProxyHelper(func, req);
+}
+
+template <typename R, typename Obj, typename ...Args>
+std::string RPCServer::callProxyHelper(Obj &obj, R(Obj::*f)(Args...), const std::string &req)
+{
+    ProcedurePacket<Args...> packet = Serializer::Deserialize<ProcedurePacket<Args...>>(req);
+    auto args = packet.t;
+
+    std::function<R(Args...)> func = [&](Args ...a)
+    {
+        // error: must use ‘.*’ or ‘->*’ to call pointer-to-member function in ‘f (...)’, e.g. ‘(... ->* f) (...)’
+        // return obj.*f(a...);
+        return (obj.*f)(a...); // 注意这里，是调用参数里面的 f
+    };
+
+    typename RetType<R>::type ret = invoke<R>(func, args);
+    return Serializer::Serialize(ret);
 }
