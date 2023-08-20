@@ -19,6 +19,36 @@ decltype(auto) apply_tuple(Function&& func, Tuple&& tuple) {
                             std::make_index_sequence<tuple_size>());
 }
 
+// 存储返回值类型的结构体（主要是用于实现支持返回值为 void 的函数）
+template <typename R>
+struct RetType
+{
+    typedef R type;
+};
+
+// 特例化 void 模版
+template <>
+struct RetType<void>
+{
+    typedef int type;
+};
+
+// 调用中间件，当 R 不为 void 时，调用该版本
+template <typename R, typename Function, typename Tuple>
+typename std::enable_if<!std::is_same<R, void>::value, typename RetType<R>::type>::type
+invoke(Function &&f, Tuple &&tuple)
+{
+    return apply_tuple(f, tuple);
+}
+
+// 当 R 为 void 时，调用该版本，返回 0（占位，无实际意义）
+template <typename R, typename Function, typename Tuple>
+typename std::enable_if<std::is_same<R, void>::value, typename RetType<R>::type>::type
+invoke(Function &&f, Tuple &&tuple)
+{
+    apply_tuple(f, tuple);
+    return 0;
+}
 
 class RPCServer
 {
@@ -40,6 +70,7 @@ public:
     void registerProcedure(const std::string &name, Func procedure);
 
 private:
+    // 处理用户的远程调用，并将返回结果序列化后，返回给用户
     template <typename ...Args>
     std::string handleRequest(const std::string &request);
 
@@ -54,9 +85,11 @@ private:
     template <typename Func>
     std::string callProxy(Func f, const std::string &req);
 
+    // 调用帮助函数，支持 std::function
     template <typename R, typename ...Args>
     std::string callProxyHelper(std::function<R(Args ...)> f, const std::string &req);
 
+    // 调用帮助函数，支持普通函数
     template <typename R, typename ...Args>
     std::string callProxyHelper(R(*f)(Args ...), const std::string &req);   
 };
@@ -109,19 +142,15 @@ std::string RPCServer::callProxy(Func f, const std::string &req)
     return callProxyHelper(f, req);
 }
 
-
-
-// std::function
 template <typename R, typename ...Args>
 std::string RPCServer::callProxyHelper(std::function<R(Args ...)> f, const std::string &req)   
 {
     ProcedurePacket<Args...> packet = Serializer::Deserialize<ProcedurePacket<Args...>>(req);
     auto args = packet.t;
-    R ret = apply_tuple(f, args);
+    typename RetType<R>::type ret = invoke<R>(f, args);
     return Serializer::Serialize(ret);
 }
 
-// function pointer
 template <typename R, typename ...Args>
 std::string RPCServer::callProxyHelper(R(*f)(Args ...), const std::string &req)   
 {

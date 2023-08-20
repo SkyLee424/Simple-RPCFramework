@@ -28,6 +28,7 @@ int main(void)
     };
     server.registerProcedure("add", add);
     server.registerProcedure("sub", sub);
-    // server.registerProcedure("show", show); // 暂时不支持返回值为 void 的函数
+    server.registerProcedure("show", show); 
+    server.registerProcedure("func1", func1);
     server.start();
 }
