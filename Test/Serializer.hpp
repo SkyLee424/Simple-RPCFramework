@@ -13,25 +13,35 @@ public:
     template <typename T>
     static std::string Serialize(const T& object) {
         std::ostringstream os;
-        os << typeid(object).name() << " ";
         os << object;
         return os.str();
     }
 
     template <typename T>
-    static T Deserialize(const std::string& serializedData) {
+    static typename
+    std::enable_if<!std::is_same<T, std::string>::value, T>::type
+    Deserialize(const std::string& serializedData) {
         std::istringstream is(serializedData);
-        std::string typeName;
-        is >> typeName;
-        // if (typeName != typeid(T).name()) {
-        //     std::istringstream error;
-        //     error << "Type mismatch during deserialization." << std::endl;
-        //     error << "Original Type: " << typeName << std::endl;
-        //     error << "Target Type: " << typeid(T).name() << std::endl;
-        //     throw std::runtime_error(error.str());
-        // }
         T object;
         is >> object;
+        return object;
+    }
+
+    //  对于反序列化对象为 string 的，特殊处理
+    template <typename T>
+    static typename
+    std::enable_if<std::is_same<T, std::string>::value, std::string>::type
+    Deserialize(const std::string& serializedData) {
+        std::istringstream is(serializedData);
+        T object;
+        std::string temp;
+        while (std::getline(is, temp))
+        {
+            object += temp;
+            if(!is.eof())
+                object += '\n';
+        }
+        
         return object;
     }
 };
