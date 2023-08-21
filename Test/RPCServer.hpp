@@ -6,6 +6,7 @@
 #include "TCPSocket.hpp"
 #include "Serializer.hpp"
 #include "ProcedurePacket.hpp"
+#include "ReturnPacket.hpp"
 
 template <typename Function, typename Tuple, size_t... Index>
 decltype(auto) apply_tuple_impl(Function&& func, Tuple&& tuple, std::index_sequence<Index...>) {
@@ -19,19 +20,7 @@ decltype(auto) apply_tuple(Function&& func, Tuple&& tuple) {
                             std::make_index_sequence<tuple_size>());
 }
 
-// 存储返回值类型的结构体（主要是用于实现支持返回值为 void 的函数）
-template <typename R>
-struct RetType
-{
-    typedef R type;
-};
 
-// 特例化 void 模版
-template <>
-struct RetType<void>
-{
-    typedef int type;
-};
 
 // 调用中间件，当 R 不为 void 时，调用该版本
 template <typename R, typename Function, typename Tuple>
@@ -137,7 +126,10 @@ std::string RPCServer::handleRequest(const std::string &request)
     ProcedurePacket<Args...> packet = Serializer::Deserialize<ProcedurePacket<Args...>>(request);
     std::string name = packet.name;
     if(!procedures.count(name))
-        throw std::runtime_error("No Such Procedure!");
+    {
+        ReturnPacket<void> retPack(ReturnPacket<void>::NO_SUCH_PROCEDURE);
+        return Serializer::Serialize(retPack);
+    }
     auto procedure = procedures[name];
     return procedure(request); // 实际上调用的是 callProxy
 }
@@ -174,7 +166,9 @@ std::string RPCServer::callProxyHelper(std::function<R(Args ...)> f, const std::
     ProcedurePacket<Args...> packet = Serializer::Deserialize<ProcedurePacket<Args...>>(req);
     auto args = packet.t;
     typename RetType<R>::type ret = invoke<R>(f, args);
-    return Serializer::Serialize(ret);
+    ReturnPacket<R> retPack(ReturnPacket<R>::SUCCESS, ret);
+    return Serializer::Serialize(retPack);
+    // return Serializer::Serialize(ret);
 }
 
 template <typename R, typename ...Args>
@@ -198,5 +192,7 @@ std::string RPCServer::callProxyHelper(Obj &obj, R(Obj::*f)(Args...), const std:
     };
 
     typename RetType<R>::type ret = invoke<R>(func, args);
-    return Serializer::Serialize(ret);
+    ReturnPacket<R> retPack(ReturnPacket<R>::SUCCESS, ret);
+    return Serializer::Serialize(retPack);
+    // return Serializer::Serialize(ret);
 }
