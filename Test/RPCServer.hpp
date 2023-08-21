@@ -1,3 +1,5 @@
+#pragma once
+
 #include <iostream>
 #include <unordered_map>
 #include <functional>
@@ -9,6 +11,7 @@
 #include "Serializer.hpp"
 #include "ProcedurePacket.hpp"
 #include "ReturnPacket.hpp"
+#include "ThreadPool.h"
 
 template <typename Function, typename Tuple, size_t... Index>
 decltype(auto) apply_tuple_impl(Function&& func, Tuple&& tuple, std::index_sequence<Index...>) {
@@ -43,13 +46,15 @@ invoke(Function &&f, Tuple &&tuple)
 
 class RPCServer
 {
+    static constexpr size_t DEFAULT_THREAD_HOLD = 6;
+
     std::unordered_map<std::string, std::function<std::string(const std::string&)>> procedures;
     std::mutex mlock;
     ServerSocket server;
-
+    ThreadPool pool;
 public:
-    RPCServer(const std::string &ip, uint16_t port)
-        : server(ip, port) {}
+    RPCServer(const std::string &ip, uint16_t port, size_t thread_hold = DEFAULT_THREAD_HOLD)
+        : server(ip, port), pool(thread_hold) {}
 
     ~RPCServer()
     {
@@ -104,8 +109,7 @@ void RPCServer::start(void)
     while (true)
     {
         auto _clnt = server.accept();
-
-        std::thread worker([&](std::mutex &m_lock, TCPSocket *clnt)
+        pool.enqueue([&](std::mutex &m_lock, TCPSocket *clnt)
         {
             {
                 std::lock_guard<std::mutex> lock(m_lock);
@@ -127,15 +131,12 @@ void RPCServer::start(void)
                     clnt->close();
                     break;
                 }
-
+                
                 std::string ret = handleRequest(req);
                 clnt->send(ret);
             }
         }, std::ref(this->mlock), _clnt);
-
-        worker.detach();
     }
-    
 }
 
 template <typename ...Args>

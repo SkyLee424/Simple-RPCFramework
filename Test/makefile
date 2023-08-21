@@ -1,4 +1,4 @@
-CXX = g++
+CXX = clang++
 TARGET = test
 CXXFLAGS =  -std=c++17 -c -g
 SRC = $(wildcard *.cpp) 
