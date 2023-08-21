@@ -1,10 +1,11 @@
 #pragma once
 
+#include <iostream>
 #include "ServerSocket.hpp"
 #include "TCPSocket.hpp"
 #include "Serializer.hpp"
 #include "ProcedurePacket.hpp"
-#include <iostream>
+#include "ReturnPacket.hpp"
 
 class RPCClient
 {
@@ -47,7 +48,10 @@ RPCClient::remoteCall(const std::string &procedureName, const Args& ...args)
     std::string req = Serializer::Serialize(packet);
     clnt->send(req);
     std::string res = clnt->receive();
-    return Serializer::Deserialize<R>(res);
+    ReturnPacket<R> ret = Serializer::Deserialize<ReturnPacket<R>>(res);
+    if(!ret.vaild())
+        throw std::runtime_error("remoteCall: Received error code from server, error code: " + std::to_string(ret.getCode()));
+    return ret.getRet();
 }
 
 template <typename R, typename ...Args>
