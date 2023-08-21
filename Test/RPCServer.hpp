@@ -2,6 +2,8 @@
 #include <unordered_map>
 #include <functional>
 #include <string>
+#include <thread>
+#include <mutex>
 #include "ServerSocket.hpp"
 #include "TCPSocket.hpp"
 #include "Serializer.hpp"
@@ -42,6 +44,7 @@ invoke(Function &&f, Tuple &&tuple)
 class RPCServer
 {
     std::unordered_map<std::string, std::function<std::string(const std::string&)>> procedures;
+    std::mutex mlock;
     ServerSocket server;
 
 public:
@@ -98,25 +101,41 @@ private:
 
 void RPCServer::start(void)
 {
-    auto clnt = server.accept();
-    std::cout << "[log] Connect with " << clnt->getIP() << ":" << clnt->getPort() << std::endl;
     while (true)
     {
-        std::string req;
-        try
-        {
-            req = clnt->receive();
-        }
-        catch (const std::exception &e)
-        {
-            std::cout << "[log] Released Connection with " << clnt->getIP() << ":" << clnt->getPort() << std::endl;
-            clnt->close();
-            break;
-        }
+        auto _clnt = server.accept();
 
-        std::string ret = handleRequest(req);
-        clnt->send(ret);
+        std::thread worker([&](std::mutex &m_lock, TCPSocket *clnt)
+        {
+            {
+                std::lock_guard<std::mutex> lock(m_lock);
+                std::cout << "[log] Connect with " << clnt->getIP() << ":" << clnt->getPort() << std::endl;
+            }
+            while (true)
+            {
+                std::string req;
+                try
+                {
+                    req = clnt->receive();
+                }
+                catch (const std::exception &e)
+                {
+                    {
+                        std::lock_guard<std::mutex> lock(m_lock);
+                        std::cout << "[log] Released Connection with " << clnt->getIP() << ":" << clnt->getPort() << std::endl;
+                    }
+                    clnt->close();
+                    break;
+                }
+
+                std::string ret = handleRequest(req);
+                clnt->send(ret);
+            }
+        }, std::ref(this->mlock), _clnt);
+
+        worker.detach();
     }
+    
 }
 
 template <typename ...Args>
