@@ -1,9 +1,9 @@
 /**
  * @file ServerSocket.hpp
  * @author Sky Lee
- * @brief 解决了快速重启服务器失败的问题
+ * @brief 简单的服务器套接字
  * @version 0.1.1
- * @date 2023-07-19
+ * @date 2023-08-23
  * 
  * @copyright Copyright (c) 2023
  * 
@@ -34,14 +34,12 @@ class ServerSocket
     int backlog;
     bool closed = false;
 public:
+    static const uint16_t DEFAULT_PORT = 1145;
     static const int DEFAULT_BACKLOG = 5;
 public:
     using socket_t = int;
 
-    ServerSocket(int port)
-        :ServerSocket("127.0.0.1", port) {}
-
-    ServerSocket(const std::string &ip, uint16_t port)
+    ServerSocket(std::string ip = "127.0.0.1", uint16_t port = DEFAULT_PORT, int backlog = DEFAULT_BACKLOG)
     {
         if(inet_addr(ip.c_str()) == INADDR_NONE)
             throw std::runtime_error("非法 IP");
@@ -49,6 +47,7 @@ public:
             throw std::runtime_error("非法端口");
         this->ip = ip;
         this->port = port;
+        this->backlog = backlog;
         fd = socket(AF_INET, SOCK_STREAM, 0);
         if(fd < 0)
             throw std::runtime_error("ServerSocket: socket error");
@@ -62,12 +61,6 @@ public:
 
         bind();
         listen();
-    }
-
-    ServerSocket(const std::string ip, uint16_t port, int backlog)
-        :ServerSocket(ip, port)
-    {
-        this->backlog = backlog;
     }
 
     socket_t getSocket(void)

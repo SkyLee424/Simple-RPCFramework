@@ -46,15 +46,16 @@ invoke(Function &&f, Tuple &&tuple)
 
 class RPCServer
 {
-    static constexpr size_t DEFAULT_THREAD_HOLD = 6;
+    static constexpr size_t DEFAULT_THREAD_HOLD = 6; // 默认线程数
+    static constexpr size_t DEFAULT_BACKLOG = 5;     // 默认 backlog（全连接数 - 1）
 
     std::unordered_map<std::string, std::function<std::string(const std::string&)>> procedures;
     std::mutex mlock;
     ServerSocket server;
     ThreadPool pool;
 public:
-    RPCServer(const std::string &ip, uint16_t port, size_t thread_hold = DEFAULT_THREAD_HOLD)
-        : server(ip, port), pool(thread_hold) {}
+    RPCServer(const std::string &ip, uint16_t port, size_t thread_hold = DEFAULT_THREAD_HOLD, size_t backlog = DEFAULT_BACKLOG)
+        : server(ip, port, backlog), pool(thread_hold) {}
 
     ~RPCServer()
     {

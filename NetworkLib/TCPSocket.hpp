@@ -1,5 +1,6 @@
 #pragma once
 #include "ServerSocket.hpp"
+#include <iostream>
 
 sockaddr_in get_sockaddr_in(const std::string &ip, uint16_t port);
 
@@ -40,7 +41,7 @@ public:
 
     ~TCPSocket()
     {
-        // std::cout << "~TCPSocket" << std::endl;
+        // std::cout << "~TCPSocket, " << ip << ":" << port << std::endl;
         close();
         pthread_mutex_destroy(&sendLock);
         pthread_mutex_destroy(&recvLock);
@@ -91,8 +92,10 @@ public:
             int chunkSize = recv(socketFd, &buffer[offset], remainingSize, 0); // 这一行细细体会
             pthread_mutex_unlock(&recvLock);
 
-            if (chunkSize <= 0)
+            if (chunkSize < 0)
                 throw std::runtime_error("recv error");
+            else if(chunkSize == 0)
+                throw std::logic_error("clnt exit");
 
             remainingSize -= chunkSize;
             offset += chunkSize;
@@ -107,6 +110,11 @@ public:
             return ;
         ::close(socketFd);
         closed = true;
+    }
+
+    bool valid(void)
+    {
+        return !closed;
     }
 
     std::string getIP(void)
