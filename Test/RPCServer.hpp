@@ -1,219 +1,160 @@
-#pragma once
-
-#include <iostream>
-#include <unordered_map>
-#include <functional>
-#include <string>
-#include <thread>
-#include <mutex>
 #include "ServerSocket.hpp"
-#include "TCPSocket.hpp"
-#include "Serializer.hpp"
-#include "ProcedurePacket.hpp"
-#include "ReturnPacket.hpp"
 #include "ThreadPool.h"
+#include "RPCFramework.hpp"
+#include <sys/epoll.h>
+#include <vector>
+#include <unordered_map>
+#include <unordered_set>
+#include <queue>
+#include <functional>
+#include <mutex>
+#include <condition_variable>
+#include <iostream> // for debug
 
-template <typename Function, typename Tuple, size_t... Index>
-decltype(auto) apply_tuple_impl(Function&& func, Tuple&& tuple, std::index_sequence<Index...>) {
-    return func(std::get<Index>(std::forward<Tuple>(tuple))...);
-}
+class RPCServer;
 
-template <typename Function, typename Tuple>
-decltype(auto) apply_tuple(Function&& func, Tuple&& tuple) {
-    constexpr size_t tuple_size = std::tuple_size<std::decay_t<Tuple>>::value;
-    return apply_tuple_impl(std::forward<Function>(func), std::forward<Tuple>(tuple),
-                            std::make_index_sequence<tuple_size>());
-}
-
-
-
-// 调用中间件，当 R 不为 void 时，调用该版本
-template <typename R, typename Function, typename Tuple>
-typename std::enable_if<!std::is_same<R, void>::value, typename RetType<R>::type>::type
-invoke(Function &&f, Tuple &&tuple)
-{
-    return apply_tuple(f, tuple);
-}
-
-// 当 R 为 void 时，调用该版本，返回 0（占位，无实际意义）
-template <typename R, typename Function, typename Tuple>
-typename std::enable_if<std::is_same<R, void>::value, typename RetType<R>::type>::type
-invoke(Function &&f, Tuple &&tuple)
-{
-    apply_tuple(f, tuple);
-    return 0;
-}
+void doEpoll(RPCServer *server, int epfd);
 
 class RPCServer
 {
-    static constexpr size_t DEFAULT_THREAD_HOLD = 6; // 默认线程数
-    static constexpr size_t DEFAULT_BACKLOG = 5;     // 默认 backlog（全连接数 - 1）
+    friend void doEpoll(RPCServer *server, int epfd);
 
-    std::unordered_map<std::string, std::function<std::string(const std::string&)>> procedures;
-    std::mutex mlock;
-    ServerSocket server;
+    std::function<bool(int, int)> cmp = [this](int epfd0, int epfd1) -> bool
+    {
+        return epfds.at(epfd0) > epfds.at(epfd1);
+    };
+
+private:
+    size_t task_thread;
+    size_t epoll_buffer_size;
+    ServerSocket serverSock;
     ThreadPool pool;
+    RPCFramework framework;
+    std::unordered_map<int, int> epfds;                                // epfds[i]: 监视的 socket 的数量
+    std::unordered_map<int, TCPSocket *> clnts;                        // fd 对应的客户
+    std::priority_queue<int, std::vector<int>, decltype(cmp)> pq{cmp}; // 小根堆，每次选择监视 socket 数量最小的 epfd
+
 public:
-    RPCServer(const std::string &ip, uint16_t port, size_t thread_hold = DEFAULT_THREAD_HOLD, size_t backlog = DEFAULT_BACKLOG)
-        : server(ip, port, backlog), pool(thread_hold) {}
+    static constexpr size_t DEFAULT_THREAD_HOLD = 6;          // 默认线程数
+    static constexpr size_t DEFAULT_BACKLOG = 5;              // 默认全连接数，即支持同时连接的用户个数 - 1
+    static constexpr size_t DEFAULT_TASK_THREAD_HOLD = 6;     // 默认一个 epoll 实例最多可以开的线程数
+    static constexpr size_t DEFAULT_EPOLL_BUFFER_SIZE = 1024; // 默认一个 epoll 实例的 buffer 的大小
+
+    RPCServer(const std::string &ip, uint16_t port,
+           size_t backlog = DEFAULT_BACKLOG,
+           size_t epoll_buffer_size = DEFAULT_EPOLL_BUFFER_SIZE,
+           size_t thread_hold = DEFAULT_THREAD_HOLD, size_t task_thread_hold = DEFAULT_TASK_THREAD_HOLD)
+        : serverSock(ip, port, backlog), epoll_buffer_size(epoll_buffer_size)
+        ,pool(thread_hold), task_thread(task_thread_hold)
+    {
+        for (size_t i = 0; i < thread_hold; ++i) // 创建 epfd
+        {
+            int epfd = epoll_create(1024);
+            epfds[epfd] = 0;
+            pq.push(epfd);
+            pool.enqueue(doEpoll, this, epfd);
+        }
+    }
 
     ~RPCServer()
     {
-        server.close();
+        serverSock.close();
     }
 
-    void start(void);
+    void start(void)
+    {
+        epoll_event event;
+        while (true)
+        {
+            auto clnt = serverSock.accept();
+            // std::cout << "[Info] Connect with " << clnt->getIP() << ":" << clnt->getPort() << std::endl;
+            int target_epfd = pq.top();
+            pq.pop();
 
-    // 支持注册普通函数和 std::function 对象
+            ++epfds[target_epfd];
+
+            // std::cout << "epfd " << target_epfd << ", active connections: " << epfds[target_epfd] << std::endl;
+
+            pq.push(target_epfd);
+            clnts[clnt->getSocket()] = clnt;
+
+            event.data.fd = clnt->getSocket();
+            event.events = EPOLLIN;
+
+            epoll_ctl(target_epfd, EPOLL_CTL_ADD, clnt->getSocket(), &event);
+        }
+    }
+
     template <typename Func>
     void registerProcedure(const std::string &name, Func procedure);
 
-    // 支持注册类成员函数
     template <typename Obj, typename Func>
     void registerProcedure(const std::string &name, Obj &obj, Func procedure);
-
-private:
-    // 处理用户的远程调用，并将返回结果序列化后，返回给用户
-    template <typename ...Args>
-    std::string handleRequest(const std::string &request);
-
-    /**
-     * @brief 
-     * 
-     * @tparam Func 
-     * @param f 待调用过程
-     * @param req 用户发出的请求
-     * @return std::string 
-     */
-    template <typename Func>
-    std::string callProxy(Func f, const std::string &req);
-
-    // 调用类的成员函数
-    template <typename Obj, typename Func>
-    std::string callProxy(Obj &obj, Func f, const std::string &req);
-
-    // 调用帮助函数，支持 std::function
-    template <typename R, typename ...Args>
-    std::string callProxyHelper(std::function<R(Args ...)> f, const std::string &req);
-
-    // 调用帮助函数，支持普通函数
-    template <typename R, typename ...Args>
-    std::string callProxyHelper(R(*f)(Args ...), const std::string &req);   
-
-    // 调用帮助函数，支持类的成员函数
-    template <typename R, typename Obj, typename ...Args>
-    std::string callProxyHelper(Obj &obj, R(Obj::*f)(Args...), const std::string &req);
 };
-
-void RPCServer::start(void)
-{
-    while (true)
-    {
-        auto _clnt = server.accept();
-        pool.enqueue([&](std::mutex &m_lock, TCPSocket *clnt)
-        {
-            {
-                std::lock_guard<std::mutex> lock(m_lock);
-                std::cout << "[log] Connect with " << clnt->getIP() << ":" << clnt->getPort() << std::endl;
-            }
-            while (true)
-            {
-                std::string req;
-                try
-                {
-                    req = clnt->receive();
-                }
-                catch (const std::exception &e)
-                {
-                    {
-                        std::lock_guard<std::mutex> lock(m_lock);
-                        std::cout << "[log] Released Connection with " << clnt->getIP() << ":" << clnt->getPort() << std::endl;
-                    }
-                    clnt->close();
-                    break;
-                }
-                
-                std::string ret = handleRequest(req);
-                clnt->send(ret);
-            }
-        }, std::ref(this->mlock), _clnt);
-    }
-}
-
-template <typename ...Args>
-std::string RPCServer::handleRequest(const std::string &request)
-{
-    // 反序列化
-    ProcedurePacket<Args...> packet = Serializer::Deserialize<ProcedurePacket<Args...>>(request);
-    std::string name = packet.name;
-    if(!procedures.count(name))
-    {
-        ReturnPacket<void> retPack(ReturnPacket<void>::NO_SUCH_PROCEDURE);
-        return Serializer::Serialize(retPack);
-    }
-    auto procedure = procedures[name];
-    return procedure(request); // 实际上调用的是 callProxy
-}
 
 template <typename Func>
 void RPCServer::registerProcedure(const std::string &name, Func procedure)
 {
-    // bind callProxy 的函数指针，记得传入 this 指针，因为 callProxy 不是静态的
-    procedures[name] = std::bind(&RPCServer::callProxy<Func>, this, procedure, std::placeholders::_1);
+    framework.registerProcedure(name, procedure);
 }
 
 template <typename Obj, typename Func>
 void RPCServer::registerProcedure(const std::string &name, Obj &obj, Func procedure)
 {
-    // 注意，这里需要使用 std::ref 获取 obj 的引用
-    procedures[name] = std::bind(&RPCServer::callProxy<Obj, Func>, this, std::ref(obj), procedure, std::placeholders::_1);
+    framework.registerProcedure(name, obj, procedure);
 }
 
-template <typename Func>
-std::string RPCServer::callProxy(Func f, const std::string &req)
+void doEpoll(RPCServer *server, int epfd)
 {
-    return callProxyHelper(f, req);
-}
-
-template <typename Obj, typename Func>
-std::string RPCServer::callProxy(Obj &obj, Func f, const std::string &req)
-{
-    return callProxyHelper(obj, f, req);
-}
-
-template <typename R, typename ...Args>
-std::string RPCServer::callProxyHelper(std::function<R(Args ...)> f, const std::string &req)   
-{
-    ProcedurePacket<Args...> packet = Serializer::Deserialize<ProcedurePacket<Args...>>(req);
-    auto args = packet.t;
-    typename RetType<R>::type ret = invoke<R>(f, args);
-    ReturnPacket<R> retPack(ReturnPacket<R>::SUCCESS, ret);
-    return Serializer::Serialize(retPack);
-    // return Serializer::Serialize(ret);
-}
-
-template <typename R, typename ...Args>
-std::string RPCServer::callProxyHelper(R(*f)(Args ...), const std::string &req)   
-{
-    std::function<R(Args...)> func(f);
-    return callProxyHelper(func, req);
-}
-
-template <typename R, typename Obj, typename ...Args>
-std::string RPCServer::callProxyHelper(Obj &obj, R(Obj::*f)(Args...), const std::string &req)
-{
-    ProcedurePacket<Args...> packet = Serializer::Deserialize<ProcedurePacket<Args...>>(req);
-    auto args = packet.t;
-
-    std::function<R(Args...)> func = [&](Args ...a)
+    ThreadPool pool(server->task_thread);
+    epoll_event events[server->epoll_buffer_size];
+    int loop = 0;
+    while (true)
     {
-        // error: must use ‘.*’ or ‘->*’ to call pointer-to-member function in ‘f (...)’, e.g. ‘(... ->* f) (...)’
-        // return obj.*f(a...);
-        return (obj.*f)(a...); // 注意这里，是调用参数里面的 f
-    };
+        ++loop;
+        int eventsNum = 0;
+        eventsNum = epoll_wait(epfd, events, sizeof(events), -1);
 
-    typename RetType<R>::type ret = invoke<R>(func, args);
-    ReturnPacket<R> retPack(ReturnPacket<R>::SUCCESS, ret);
-    return Serializer::Serialize(retPack);
-    // return Serializer::Serialize(ret);
+        if (eventsNum == -1)
+        {
+            std::cout << "[Error] Thread " << std::this_thread::get_id() << ": epoll_wait error" << std::endl;
+            continue;
+        }
+        
+        std::vector<std::shared_ptr<TCPSocket>> closed_clients; // 使用智能指针管理
+
+        for (size_t event = 0; event < eventsNum; ++event)
+        {
+            if(!server->clnts.count(events[event].data.fd)) // 有可能是过期的事件（已经处理）
+                continue;
+            auto clnt = server->clnts[events[event].data.fd];
+            std::string IP = clnt->getIP();
+            uint16_t port = clnt->getPort();
+
+            try
+            {
+                std::string req = clnt->receive();
+                std::string ret = server->framework.handleRequest(req);
+                clnt->send(ret);
+            }
+            catch (const std::exception &excp)
+            {
+                // Client disconnected
+                // std::cout << "[Info] Connection with " << IP << ":" << port << " closed." << std::endl;
+                epoll_ctl(epfd, EPOLL_CTL_DEL, clnt->getSocket(), NULL);
+                closed_clients.emplace_back(clnt); // Collect closed client connections
+            }
+
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
+        
+        // Clean up closed client connections
+        for (const auto &closed_clnt : closed_clients)
+        {
+            auto clnt_socket = closed_clnt->getSocket();
+            server->clnts.erase(clnt_socket);
+            --server->epfds[epfd];
+            epoll_ctl(epfd, EPOLL_CTL_DEL, clnt_socket, NULL);
+        }
+    }
 }
