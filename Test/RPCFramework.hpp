@@ -1,13 +1,11 @@
 #pragma once
 
-#include <iostream>
 #include <unordered_map>
 #include <functional>
 #include <string>
-// #include <thread>
-// #include <mutex>
-// #include "ServerSocket.hpp"
-// #include "TCPSocket.hpp"
+#include <log4cplus/logger.h>
+#include <log4cplus/configurator.h>
+#include <log4cplus/loggingmacros.h>
 #include "Serializer.hpp"
 #include "ProcedurePacket.hpp"
 #include "ReturnPacket.hpp"
@@ -46,23 +44,29 @@ invoke(Function &&f, Tuple &&tuple)
 
 class RPCFramework
 {
-    // static constexpr size_t DEFAULT_THREAD_HOLD = 6; // 默认线程数
-    // static constexpr size_t DEFAULT_BACKLOG = 5;     // 默认 backlog（全连接数 - 1）
-
+public: 
+    static constexpr int DEFAULT_CRITICAL_TIME = 3; // 默认调用过程临界时间
+private:
     std::unordered_map<std::string, std::function<std::string(const std::string&)>> procedures;
-    // std::mutex mlock;
-    // ServerSocket server;
-    // ThreadPool pool;
+    log4cplus::Logger logger;
+    int criticalTime; // 若调用某个过程超过该时间，将会输出警告信息到日志文件中，-1 代表关闭警告
+    
 public:
-    // RPCFramework(const std::string &ip, uint16_t port, size_t thread_hold = DEFAULT_THREAD_HOLD, size_t backlog = DEFAULT_BACKLOG)
-    //     : server(ip, port, backlog), pool(thread_hold) {}
-
-    // ~RPCFramework()
-    // {
-    //     server.close();
-    // }
-
-    // void start(void);
+    RPCFramework(int criticalTime = DEFAULT_CRITICAL_TIME)
+        :criticalTime(criticalTime)
+    {
+        log4cplus::initialize();
+        try
+        {
+            log4cplus::PropertyConfigurator::doConfigure("Log/config/log4cplus.properties");
+            logger = log4cplus::Logger::getInstance("FrameworkLogger");
+        }
+        catch(const std::exception& e)
+        {
+            std::cerr << e.what() << '\n';
+            exit(-1);
+        }
+    }
 
     // 支持注册普通函数和 std::function 对象
     template <typename Func>
@@ -106,41 +110,6 @@ private:
     std::string callProxyHelper(Obj &obj, R(Obj::*f)(Args...), const std::string &req);
 };
 
-// void RPCFramework::start(void)
-// {
-//     while (true)
-//     {
-//         auto _clnt = server.accept();
-//         pool.enqueue([&](std::mutex &m_lock, TCPSocket *clnt)
-//         {
-//             {
-//                 std::lock_guard<std::mutex> lock(m_lock);
-//                 std::cout << "[log] Connect with " << clnt->getIP() << ":" << clnt->getPort() << std::endl;
-//             }
-//             while (true)
-//             {
-//                 std::string req;
-//                 try
-//                 {
-//                     req = clnt->receive();
-//                 }
-//                 catch (const std::exception &e)
-//                 {
-//                     {
-//                         std::lock_guard<std::mutex> lock(m_lock);
-//                         std::cout << "[log] Released Connection with " << clnt->getIP() << ":" << clnt->getPort() << std::endl;
-//                     }
-//                     clnt->close();
-//                     break;
-//                 }
-                
-//                 std::string ret = handleRequest(req);
-//                 clnt->send(ret);
-//             }
-//         }, std::ref(this->mlock), _clnt);
-//     }
-// }
-
 template <typename ...Args>
 std::string RPCFramework::handleRequest(const std::string &request)
 {
@@ -149,16 +118,36 @@ std::string RPCFramework::handleRequest(const std::string &request)
     std::string name = packet.name;
     if(!procedures.count(name))
     {
+        LOG4CPLUS_WARN(logger, "No such procedure: " + name);
         ReturnPacket<void> retPack(ReturnPacket<void>::NO_SUCH_PROCEDURE);
         return Serializer::Serialize(retPack);
     }
     auto procedure = procedures[name];
-    return procedure(request); // 实际上调用的是 callProxy
+    auto startTime = std::chrono::high_resolution_clock::now();
+
+    std::string ret;
+    try
+    {
+        ret = procedure(request); // 实际上调用的是 callProxy
+    }
+    catch(const std::exception& e)
+    {
+        LOG4CPLUS_ERROR(logger, "Handler procedure error, message: " + std::string(e.what()));
+        ReturnPacket<void> retPack(ReturnPacket<void>::UNKNOWN);
+        return Serializer::Serialize(retPack);
+    }
+    
+    auto endTime = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count() / 1e6;
+    if(duration >= criticalTime)
+        LOG4CPLUS_WARN(logger, "Procedure " + name + " runtime exceeded, cost " + std::to_string(duration) + " s");
+    return ret;
 }
 
 template <typename Func>
 void RPCFramework::registerProcedure(const std::string &name, Func procedure)
 {
+    LOG4CPLUS_INFO(logger, "Regist procedure " + name);
     // bind callProxy 的函数指针，记得传入 this 指针，因为 callProxy 不是静态的
     procedures[name] = std::bind(&RPCFramework::callProxy<Func>, this, procedure, std::placeholders::_1);
 }
@@ -166,6 +155,7 @@ void RPCFramework::registerProcedure(const std::string &name, Func procedure)
 template <typename Obj, typename Func>
 void RPCFramework::registerProcedure(const std::string &name, Obj &obj, Func procedure)
 {
+    LOG4CPLUS_INFO(logger, "Regist procedure " + name);
     // 注意，这里需要使用 std::ref 获取 obj 的引用
     procedures[name] = std::bind(&RPCFramework::callProxy<Obj, Func>, this, std::ref(obj), procedure, std::placeholders::_1);
 }
