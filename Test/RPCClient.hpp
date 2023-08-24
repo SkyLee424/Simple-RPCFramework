@@ -10,18 +10,21 @@
 class RPCClient
 {
     TCPSocket *clnt;
-
+    bool closed;
 public:
     RPCClient(const std::string &ip, uint16_t port)
-        : clnt(new TCPSocket(ip, port))
+        : clnt(new TCPSocket(ip, port)), closed(false)
     {
         clnt->connect();
     }
 
     ~RPCClient()
     {
-        clnt->close();
-        delete clnt;
+        if(!closed)
+        {
+            clnt->close();
+            delete clnt;
+        }
     }
 
     template <typename R, typename ...Args>
@@ -34,9 +37,6 @@ public:
     typename
     std::enable_if<std::is_same<R, void>::value, void>::type
     remoteCall(const std::string &procedureName, const Args& ...args);
-
-private:
-    
 };
 
 template <typename R, typename ...Args>
