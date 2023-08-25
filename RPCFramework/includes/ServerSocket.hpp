@@ -50,7 +50,10 @@ public:
         this->backlog = backlog;
         fd = socket(AF_INET, SOCK_STREAM, 0);
         if(fd < 0)
-            throw std::runtime_error("ServerSocket: socket error");
+        {
+            std::string errorMsg(strerror(errno));
+            throw std::runtime_error("ServerSocket: socket error: " + errorMsg);
+        }
 
         // 可将 TIME_WAIT 下的套接字端口号重新分配给新的套接字
         // 避免快速重启服务器失败的问题
@@ -77,7 +80,10 @@ public:
         int clnt_sock = ::accept(fd, (sockaddr*)&clnt_addr, &len);
 
         if(clnt_sock < 0)
-            throw std::runtime_error("accept error");
+        {
+            std::string errorMsg(strerror(errno));
+            throw std::runtime_error("accept error: " + errorMsg);
+        }
         
         TCPSocket *ret = new TCPSocket();
         ret->socketFd = clnt_sock;
@@ -106,13 +112,19 @@ private:
         sockaddr_in address = get_sockaddr_in(ip, port);
         
         if(::bind(fd, (sockaddr*)&address, sizeof(address)) < 0)
-            throw std::runtime_error("bind error");
+        {
+            std::string errorMsg(strerror(errno));   
+            throw std::runtime_error("bind error: " + errorMsg);
+        }
     }
 
     void listen(void)
     {
         if(::listen(fd, backlog) < 0)
-            throw std::runtime_error("listen error");
+        {
+            std::string errorMsg(strerror(errno));
+            throw std::runtime_error("listen error: " + errorMsg);
+        }
     }
 };
 

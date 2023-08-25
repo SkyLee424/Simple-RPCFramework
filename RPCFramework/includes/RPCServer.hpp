@@ -113,7 +113,12 @@ public:
             event.data.fd = clnt->getSocket();
             event.events = EPOLLIN;
 
-            epoll_ctl(target_epfd, EPOLL_CTL_ADD, clnt->getSocket(), &event);
+            if(epoll_ctl(target_epfd, EPOLL_CTL_ADD, clnt->getSocket(), &event) < 0)
+            {
+                std::string errorMsg(strerror(errno));
+                LOG4CPLUS_ERROR(errorLogger, "Add clnt to epfd failed, " + errorMsg);
+                continue;
+            }
             LOG4CPLUS_DEBUG(logger, "Add clnt to epfd " + std::to_string(target_epfd));
         }
     }
@@ -141,24 +146,27 @@ void doEpoll(RPCServer *server, int epfd)
 {
     ThreadPool pool(server->task_thread);
     epoll_event events[server->epoll_buffer_size];
-    int loop = 0;
+
     while (true)
     {
-        ++loop;
         int eventsNum = 0;
+
         auto startTime = std::chrono::high_resolution_clock::now();
         eventsNum = epoll_wait(epfd, events, sizeof(events), -1);
         auto endTime = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
         double dur_s = duration.count() / 1e6;
+
         if(dur_s > 1.0)
             LOG4CPLUS_DEBUG(server->logger, "epfd: " + std::to_string(epfd) 
             + " epoll_wait cost time: " 
             + std::to_string(dur_s) 
             + " s, event number: " + std::to_string(eventsNum));
+
         if (eventsNum == -1)
         {
-            LOG4CPLUS_ERROR(server->errorLogger, "epoll_wait_error");
+            std::string errorMsg(strerror(errno));
+            LOG4CPLUS_ERROR(server->errorLogger, "epoll_wait_error: " + errorMsg);
             continue;
         }
         
@@ -182,12 +190,19 @@ void doEpoll(RPCServer *server, int epfd)
             {
                 // Client disconnected
                 LOG4CPLUS_INFO(server->logger, "Connection with " +  IP + ":" + std::to_string(port) + " closed");
-                epoll_ctl(epfd, EPOLL_CTL_DEL, clnt->getSocket(), NULL);
+                if(epoll_ctl(epfd, EPOLL_CTL_DEL, clnt->getSocket(), NULL) < 0)
+                {
+                    std::string errorMsg(strerror(errno));
+                    LOG4CPLUS_ERROR(server->errorLogger, "Remove clnt from epfd " 
+                    + std::to_string(epfd) + " error: " 
+                    + errorMsg);
+                }
                 closed_clients.emplace_back(clnt); // Collect closed client connections
             }
 
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            std::this_thread::sleep_for(std::chrono::microseconds(100)); // 给子线程 recv 时间，减少 epoll_wait 返回的次数（因为是 LT 模式）
         }
+        
         startTime = std::chrono::high_resolution_clock::now();
         auto clntNum = closed_clients.size();
 

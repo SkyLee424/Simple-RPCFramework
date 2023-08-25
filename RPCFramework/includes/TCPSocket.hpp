@@ -36,7 +36,10 @@ public:
 
         socketFd = socket(AF_INET, SOCK_STREAM, 0);
         if(socketFd < 0)
-            throw std::runtime_error("TCPSocket: socket error");
+        {
+            std::string errorMsg(strerror(errno));
+            throw std::runtime_error("TCPSocket: socket error: " + errorMsg);
+        }
     }
 
     ~TCPSocket()
@@ -53,7 +56,10 @@ public:
 
         // 将自己的 socketFd 与服务器的 IP:Port 绑定，并请求连接
         if(::connect(socketFd, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0)
-            throw std::runtime_error("connect error");
+        {
+            std::string errorMsg(strerror(errno));
+            throw std::runtime_error("connect error: " + errorMsg);
+        }
     }
 
     void send(const std::string& msg)
@@ -68,7 +74,10 @@ public:
         pthread_mutex_unlock(&sendLock);
 
         if (sendSize < 0)
-            throw std::runtime_error("send error");
+        {
+            std::string errorMsg(strerror(errno));
+            throw std::runtime_error("send error: " + errorMsg);
+        }
     }
 
     std::string receive(void)
@@ -80,7 +89,10 @@ public:
         pthread_mutex_unlock(&recvLock);
 
         if (readSize <= 0)
-            throw std::runtime_error("recv error");
+        {
+            std::string errorMsg(strerror(errno));
+            throw std::runtime_error("recv error: " + errorMsg);
+        }
 
         msgLength = ntohl(msgLength);
         std::string buffer(msgLength, '\0');
@@ -93,7 +105,10 @@ public:
             pthread_mutex_unlock(&recvLock);
 
             if (chunkSize < 0)
-                throw std::runtime_error("recv error");
+            {
+                std::string errorMsg(strerror(errno));
+                throw std::runtime_error("recv error: " + errorMsg);
+            }
             else if(chunkSize == 0)
                 throw std::logic_error("clnt exit");
 
