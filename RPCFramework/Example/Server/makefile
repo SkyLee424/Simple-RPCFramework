@@ -1,8 +1,8 @@
 CXX = clang++
-TARGET = test
+TARGET = server
 CXXFLAGS =  -std=c++17 -c -g
-INCLUDE_PATH = -I/home/skylee/Documents/WorkSpace/Demo/RPCFramework/NetworkLib
-LibFLAGS = -llog4cplus -lpthread
+INCLUDE_PATH = -I/home/skylee/Documents/WorkSpace/Demo/RPCFramework/RPCFramework/includes # 这里替换为你自己实际的路径
+LibFLAGS = -llog4cplus -lpthread 												  # 日志需要 log4plus 的支持
 SRC = $(wildcard *.cpp) 
 DEPEND = $(patsubst %.cpp, %.o, $(SRC))
 

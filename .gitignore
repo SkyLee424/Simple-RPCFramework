@@ -22,8 +22,6 @@
 # Precompiled Headers
 *.gch
 
-# Compiled headers
-*.h
 
 # macOS specific
 .DS_Store

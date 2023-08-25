@@ -30,6 +30,7 @@ class RPCServer
 private:
     size_t task_thread;
     size_t epoll_buffer_size;
+
     ServerSocket serverSock;
     ThreadPool pool;
     RPCFramework framework;
@@ -41,7 +42,7 @@ private:
 
 public:
     static constexpr size_t DEFAULT_THREAD_HOLD = 6;          // 默认线程数
-    static constexpr size_t DEFAULT_BACKLOG = 511;              // 默认全连接数，即支持同时连接的用户个数 - 1
+    static constexpr size_t DEFAULT_BACKLOG = 511;            // 默认全连接数，即支持同时连接的用户个数 - 1
     static constexpr size_t DEFAULT_TASK_THREAD_HOLD = 6;     // 默认一个 epoll 实例最多可以开的线程数
     static constexpr size_t DEFAULT_EPOLL_BUFFER_SIZE = 1024; // 默认一个 epoll 实例的 buffer 的大小
 
@@ -86,7 +87,18 @@ public:
         epoll_event event;
         while (true)
         {
-            auto clnt = serverSock.accept();
+            TCPSocket *clnt = nullptr;
+            try
+            {
+                clnt = serverSock.accept();
+            }
+            catch(const std::exception& e)
+            {
+                LOG4CPLUS_ERROR(errorLogger, e.what());
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                continue;
+            }
+            
             LOG4CPLUS_INFO(logger, "Connect with " + clnt->getIP() + ":" + std::to_string(clnt->getPort()));
             int target_epfd = pq.top();
             pq.pop();
