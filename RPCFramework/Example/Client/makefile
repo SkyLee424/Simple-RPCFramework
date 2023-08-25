@@ -1,7 +1,7 @@
 CXX = clang++
 TARGET = client
 CXXFLAGS =  -std=c++17 -c -g
-INCLUDE_PATH = -I/home/skylee/Documents/WorkSpace/Demo/RPCFramework/Test/includes/ # 这里替换为你自己实际的路径
+INCLUDE_PATH = -I/home/skylee/Documents/WorkSpace/Demo/RPCFramework/RPCFramework/includes # 这里替换为你自己实际的路径
 LibFLAGS = -lpthread
 SRC = $(wildcard *.cpp) 
 DEPEND = $(patsubst %.cpp, %.o, $(SRC))
