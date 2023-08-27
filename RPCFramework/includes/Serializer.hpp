@@ -13,7 +13,7 @@ class Serializer
 {
 public:
     template <typename T>
-    static std::string Serialize(T &object)
+    static std::string Serialize(T &&object)
     {
         std::ostringstream os;
         Serializable::Serialize(os, object);

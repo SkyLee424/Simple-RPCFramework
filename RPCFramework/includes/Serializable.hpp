@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <list>
+#include <array>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -62,6 +63,14 @@ public:
     template <typename T>
     static
     std::istream& DeSerialize(std::istream &is, std::list<T> &val);
+
+    template <typename T, std::size_t N>
+    static
+    std::ostream& Serialize(std::ostream &os, const std::array<T, N> &val);
+
+    template <typename T, std::size_t N>
+    static
+    std::istream& DeSerialize(std::istream &is, std::array<T, N> &val);
 
     template <typename T>
     static
@@ -211,6 +220,24 @@ std::istream& Serializable::DeSerialize(std::istream &is, std::list<T> &val)
     {
         Serializable::DeSerialize(is, temp);
         val.push_back(temp);
+    }
+    return is;
+}
+
+template <typename T, std::size_t N>
+std::ostream& Serializable::Serialize(std::ostream &os, const std::array<T, N> &val)
+{
+    for(const auto &elem : val)
+        Serializable::Serialize(os, elem);
+    return os;
+}
+
+template <typename T, std::size_t N>
+std::istream& Serializable::DeSerialize(std::istream &is, std::array<T, N> &val)
+{
+    for (size_t i = 0; i < N; i++)
+    {
+        Serializable::DeSerialize(is, val[i]);
     }
     return is;
 }
