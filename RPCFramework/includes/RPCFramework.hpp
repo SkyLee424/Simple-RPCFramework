@@ -132,7 +132,7 @@ std::string RPCFramework::handleRequest(const std::string &request)
     }
     catch(const std::exception& e)
     {
-        LOG4CPLUS_ERROR(logger, "Handler procedure error, message: " + std::string(e.what()));
+        LOG4CPLUS_ERROR(logger, "Handler procedure \'" + name +  "\' error, message: " + std::string(e.what()));
         ReturnPacket<void> retPack(ReturnPacket<void>::UNKNOWN);
         return Serializer::Serialize(retPack);
     }
