@@ -23,6 +23,17 @@ void testBasicFeature(const std::string& ip, uint16_t port)
         HeXin = clnt.remoteCall<People>("getHeXin", HeXin); // Parameters and return types are custom types
         std::cout << "name: " << HeXin.name << ", age: " << HeXin.age << ", BinZhou: " << HeXin.BinZhou << std::endl;
 
+        std::vector<int> nums = {1, 2, 3, 4};
+        std::cout << "Sum: " << clnt.remoteCall<int>("getSum", nums) << std::endl;
+
+        nums = {2,7,11,15};
+        auto res = clnt.remoteCall<std::vector<int>>("twoSum", nums, 9);
+        std::cout << "twoSum returns: [" << res[0] << ", " << res[1] << "]" << std::endl;
+
+        auto HeXins = clnt.remoteCall<std::vector<People>>("getManyHeXin", 5);
+        for(const auto &he : HeXins)
+            std::cout << "name: " << he.name << ", age: " << he.age << ", BinZhou: " << he.BinZhou << std::endl;
+
         std::cout << clnt.remoteCall<int>("testTimeOut") << std::endl; // long time consuming task
         clnt.remoteCall<void>("excp");
         clnt.remoteCall<int>("niubi");
