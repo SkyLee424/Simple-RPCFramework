@@ -24,8 +24,8 @@
 ## 注意事项
 
 - SimpleVer 的代码使用 C++11 以及 nlohmann::json，确保你的编译器支持 C++11，并且有 nlohmann 库
-- RPCFramework 的代码由于使用到了 C++14 模版元编程的新特性，因此编译器至少要支持 C++14，此外，由于使用了 log4cplus 记录日志，因此，需要 log4plus 库的支持
-- 使用 RPCFrameWork 时，如果注册的过程包含自定义类型，或者其它没有重载 `operator<<` 和 `operator>>` 的类型，需要重载，这是为了确保对象能够正确序列化
+- RPCFramework 的代码由于使用到了 C++14 模版元编程的新特性，以及使用了 SFINAE 技术（有 `constexpr if` 语句），因此编译器至少要支持 C++17，此外，由于使用了 log4cplus 记录日志，因此，需要 log4plus 库的支持
+- 使用 RPCFrameWork 时，如果注册的过程包含自定义类型，需要继承 Serializable 类，并重写 `Serialize` 和 `DeSerialize` 方法，这是为了确保对象能够正确序列化
 - 使用 RPCFrameWork 时，需要注意系统允许的最大描述符的数量（可以使用 `ulimit -a` 查看），如果过小，会导致同时连接的客户端数量较小
 
 ## 已知问题

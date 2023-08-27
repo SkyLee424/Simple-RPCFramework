@@ -1,5 +1,11 @@
 # RPCFramework
 
+---- 
+
+8 月 27 日更新：重写了序列化与反序列化，支持常用 STL，自定义类型的序列化变得更加简单！
+
+----
+
 ## 架构概述
 
 该RPC框架包括以下组件：
@@ -50,15 +56,18 @@ int main(void)
         std::cout << a << std::endl;
     };
 
-    server.registerProcedure("add", add);                 // 测试对 std::function 对象的支持
-    server.registerProcedure("sub", sub);                 // 测试对函数指针的支持
-    server.registerProcedure("show", show);               // 测试对 void 返回类型的支持
-    server.registerProcedure("func1", func1);             // 测试对嵌套函数的支持
-    server.registerProcedure("hello", hello);             // 测试对 std::string 返回类型的支持
-    server.registerProcedure("getHeXin", getHeXin);       // 测试参数、返回值类型为自定义类型的情况
-    server.registerProcedure("testString", testString);   // 测试参数中含有 std::string 的情况
-    server.registerProcedure("testExcp", testExcp);       // 测试在函数中，抛出异常的情况
-    server.registerProcedure("testTimeOut", testTimeOut); // 测试函数运行时间过长的情况
+    server.registerProcedure("add", add);                   // 测试对 std::function 对象的支持
+    server.registerProcedure("sub", sub);                   // 测试对函数指针的支持
+    server.registerProcedure("show", show);                 // 测试对 void 返回类型的支持
+    server.registerProcedure("func1", func1);               // 测试对嵌套函数的支持
+    server.registerProcedure("hello", hello);               // 测试对 std::string 返回类型的支持
+    server.registerProcedure("getHeXin", getHeXin);         // 测试参数、返回值类型为自定义类型的情况
+    server.registerProcedure("testString", testString);     // 测试参数中含有 std::string 的情况
+    server.registerProcedure("testExcp", testExcp);         // 测试在函数中，抛出异常的情况
+    server.registerProcedure("testTimeOut", testTimeOut);   // 测试函数运行时间过长的情况
+    server.registerProcedure("getSum", getSum);             // 测试对容器的支持
+    server.registerProcedure("twoSum", twoSum);             // 测试对容器的支持
+    server.registerProcedure("getManyHeXin", getManyHeXin); // 测试容器内存储自定义类型的支持
 
     Foo foo;
     server.registerProcedure("Foo::test1", foo, &Foo::test1); // 测试对成员函数的支持
@@ -96,6 +105,17 @@ void testBasicFeature(const std::string& ip, uint16_t port)
         HeXin = clnt.remoteCall<People>("getHeXin", HeXin); // Parameters and return types are custom types
         std::cout << "name: " << HeXin.name << ", age: " << HeXin.age << ", BinZhou: " << HeXin.BinZhou << std::endl;
 
+        std::vector<int> nums = {1, 2, 3, 4};
+        std::cout << "Sum: " << clnt.remoteCall<int>("getSum", nums) << std::endl;
+
+        nums = {2,7,11,15};
+        auto res = clnt.remoteCall<std::vector<int>>("twoSum", nums, 9);
+        std::cout << "twoSum returns: [" << res[0] << ", " << res[1] << "]" << std::endl;
+
+        auto HeXins = clnt.remoteCall<std::vector<People>>("getManyHeXin", 5);
+        for(const auto &he : HeXins)
+            std::cout << "name: " << he.name << ", age: " << he.age << ", BinZhou: " << he.BinZhou << std::endl;
+
         std::cout << clnt.remoteCall<int>("testTimeOut") << std::endl; // long time consuming task
         clnt.remoteCall<void>("excp");
         clnt.remoteCall<int>("niubi");
@@ -113,14 +133,14 @@ void testBasicFeature(const std::string& ip, uint16_t port)
 
 完整的测试代码均在 `RPCFramework/Example/` 下
 
-注意编译的时候，C++ 标准大于等于 C++14，并且链接 log4cplus 和 pthread 库
+注意编译的时候，C++ 标准大于等于 C++17，并且链接 log4cplus 和 pthread 库
 
 ## 注意事项
 
-对于自定义类型，需要重载 `operator<<` 和 `operator>>`，并且在重载的时候，需要保证 `<<` 和 `>>` 的方式一致，例如，对于自定义类型 People：
+对于自定义类型，需要继承 Serializable 类，并重写 `Serialize` 和 `DeSerialize` 方法，例如，对于自定义类型 People：
 
 ```cpp
-class People
+class People : public Serializable
 {
 public:
     std::string name;
@@ -129,45 +149,19 @@ public:
 
     People() = default;
 
-    friend std::istream &operator>>(std::istream &is, People &people)
+    static std::istream &DeSerialize(std::istream &is, People &people)
     {
-        // 自定义的对象类型必须正确读入字符串对象（主要是空格问题)
-        // 这里规定所有的字符串对象都不包含 ' 字符
-        std::string temp;
-        auto parseTo = [&temp](std::string &target) -> int
-        {
-            if(temp.find('\'') != std::string::npos)
-            {
-                size_t start = temp.find('\'');
-                size_t end = temp.find('\'', start + 1);
-                if(end == std::string::npos)
-                    return -1;
-                target = std::move(temp.substr(start + 1, end - start - 1));
-            }
-            else target = std::move(temp);
-            return 0;
-        };
-
-        std::getline(is, temp);
-        if(parseTo(people.name) == -1)
-            throw std::runtime_error("姓名不合法！输入的姓名为：" + temp);
-        
-        is >> people.age;
-        if(!is)
-            throw std::runtime_error("输入年龄不合法！");
-        is.seekg(1, std::ios::cur);
-
-        std::getline(is, temp);
-        if(parseTo(people.BinZhou) == -1)
-            throw std::runtime_error("宾周不合法！输入的宾州为：" + temp);
-
+        Serializable::DeSerialize(is, people.name);
+        Serializable::DeSerialize(is, people.age);
+        Serializable::DeSerialize(is, people.BinZhou);
         return is;
     }
 
-    // 重载的 << 运算符的输出规则必须与 >> 运算符的输入规则一致，否则序列化错误
-    friend std::ostream &operator<<(std::ostream &os, const People &people)
+    static std::ostream &Serialize(std::ostream &os, const People &people)
     {
-        os << people.name << "\n" << people.age << "\n" << people.BinZhou;
+        Serializable::Serialize(os, people.name);
+        Serializable::Serialize(os, people.age);
+        Serializable::Serialize(os, people.BinZhou);
         return os;
     }
 };
@@ -211,10 +205,10 @@ struct ProcedurePacket
         :name(name), t(std::make_tuple(args...)) {}
 
     template <typename ...X>
-    friend std::ostream& operator<<(std::ostream &os, const ProcedurePacket<X ...> &packet);
+    static std::ostream& Serialize(std::ostream &os, const ProcedurePacket<X ...> &packet);
 
     template <typename ...X>
-    friend std::istream& operator>>(std::istream &is, ProcedurePacket<X ...> &packet);
+    static std::istream& DeSerialize(std::istream &is, ProcedurePacket<X ...> &packet);
 };
 ```
 
@@ -357,29 +351,25 @@ apply_tuple 函数主要的作用就是为 apply_tuple_impl 函数服务的
 序列化和反序列化主要是通过 Serializer 工具类来实现的：
 
 ```cpp
-class Serializer {
+class Serializer
+{
 public:
     template <typename T>
-    static std::string Serialize(const T& object);
+    static std::string Serialize(T &object);
 
     template <typename T>
-    static typename
-    std::enable_if<!std::is_same<T, std::string>::value, T>::type
-    Deserialize(const std::string& serializedData);
-
-    //  对于反序列化对象为 string 的，特殊处理
-    template <typename T>
-    static typename
-    std::enable_if<std::is_same<T, std::string>::value, std::string>::type
-    Deserialize(const std::string& serializedData);
+    static T
+    Deserialize(const std::string &serializedData);
 };
 ```
 
 函数体部分可以参看源码部分
 
-但是采取这种序列化方式对用户来说负担较大，因为必须要求用户 **严格正确** 实现自定义数据类型的 `operator<<` 和 `operator>>`
+支持常用 STL
 
-后续可能会修改这个序列化方式
+自定义类型需要继承 Serializable 类，并重写 `Serialize` 和 `DeSerialize` 方法
+
+<!-- 这里可以添加一个仓库的地址 -->
 
 ## 服务端「接受用户请求--处理用户请求--返回调用结果」的过程
 
@@ -403,11 +393,5 @@ public:
 
 ## 局限性
 
-- 如果过程的参数或返回值有自定义类型，序列化和反序列化对用户不太友好，比较麻烦
 - 服务端的工作模式，主线程的工作压力很大，因为所有的连接请求都是通过主线程 accept 的
-
-解决：
-
-- 后续可能会更改对象序列化和反序列化的方式来解决第一个问题
-- 后续可能会增加连接池来解决第二个问题
 
