@@ -123,7 +123,7 @@ std::string RPCFramework::handleRequest(const std::string &request)
         return Serializer::Serialize(retPack);
     }
     auto procedure = procedures[name];
-    auto startTime = std::chrono::high_resolution_clock::now();
+    auto startTime = std::chrono::steady_clock::now();
 
     std::string ret;
     try
@@ -137,10 +137,10 @@ std::string RPCFramework::handleRequest(const std::string &request)
         return Serializer::Serialize(retPack);
     }
     
-    auto endTime = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count() / 1e6;
+    auto endTime = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
     if(duration >= criticalTime)
-        LOG4CPLUS_WARN(logger, "Procedure '" + name + "' runtime exceeded, cost " + std::to_string(duration) + " s");
+        LOG4CPLUS_WARN(logger, "Procedure '" + name + "' runtime exceeded, cost " + std::to_string(duration) + " ms");
     return ret;
 }
 

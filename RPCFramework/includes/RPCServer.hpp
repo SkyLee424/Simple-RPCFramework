@@ -151,17 +151,17 @@ void doEpoll(RPCServer *server, int epfd)
     {
         int eventsNum = 0;
 
-        auto startTime = std::chrono::high_resolution_clock::now();
+        auto startTime = std::chrono::steady_clock::now();
         eventsNum = epoll_wait(epfd, events, sizeof(events), -1);
-        auto endTime = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
-        double dur_s = duration.count() / 1e6;
+        auto endTime = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
+        size_t dur_ms = duration.count();
 
-        if(dur_s > 1.0)
+        if(dur_ms > 1000) // 等待时间大于 1000ms
             LOG4CPLUS_DEBUG(server->logger, "epfd: " + std::to_string(epfd) 
             + " epoll_wait cost time: " 
-            + std::to_string(dur_s) 
-            + " s, event number: " + std::to_string(eventsNum));
+            + std::to_string(dur_ms) 
+            + " ms, event number: " + std::to_string(eventsNum));
 
         if (eventsNum == -1)
         {
@@ -203,7 +203,7 @@ void doEpoll(RPCServer *server, int epfd)
             std::this_thread::sleep_for(std::chrono::microseconds(100)); // 给子线程 recv 时间，减少 epoll_wait 返回的次数（因为是 LT 模式）
         }
         
-        startTime = std::chrono::high_resolution_clock::now();
+        startTime = std::chrono::steady_clock::now();
         auto clntNum = closed_clients.size();
 
         // Clean up closed client connections
@@ -217,10 +217,10 @@ void doEpoll(RPCServer *server, int epfd)
             LOG4CPLUS_DEBUG(server->logger, "Remove clnt from epfd " + std::to_string(epfd));
         }
 
-        endTime = std::chrono::high_resolution_clock::now();
-        duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
-        dur_s = duration.count() / 1e6;
-        if(dur_s > 1.0)
-            LOG4CPLUS_WARN(server->logger, "Close " + std::to_string(clntNum) + " clnt cost time: " + std::to_string(dur_s));
+        endTime = std::chrono::steady_clock::now();
+        duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
+        dur_ms = duration.count();
+        if(dur_ms > 1000)
+            LOG4CPLUS_WARN(server->logger, "Close " + std::to_string(clntNum) + " clnt cost time: " + std::to_string(dur_ms));
     }
 }
