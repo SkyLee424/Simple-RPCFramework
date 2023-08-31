@@ -35,7 +35,7 @@ private:
     ThreadPool pool;
     RPCFramework framework;
     std::unordered_map<int, int> epfds;                                // epfds[i]: 监视的 socket 的数量
-    std::unordered_map<int, TCPSocket *> clnts;                        // fd 对应的客户
+    std::unordered_map<int, std::shared_ptr<TCPSocket>> clnts;         // fd 对应的客户
     std::priority_queue<int, std::vector<int>, decltype(cmp)> pq{cmp}; // 小根堆，每次选择监视 socket 数量最小的 epfd
     log4cplus::Logger logger;                                          // 记录除了错误日志的其它日志
     log4cplus::Logger errorLogger;                                     // 记录错误日志
@@ -87,10 +87,12 @@ public:
         epoll_event event;
         while (true)
         {
-            TCPSocket *clnt = nullptr;
+            std::shared_ptr<TCPSocket> clnt(nullptr);
+            uint16_t clnt_sock = -1;
             try
             {
-                clnt = serverSock.accept();
+                clnt.reset(serverSock.accept());
+                clnt_sock = clnt->getSocket();
             }
             catch(const std::exception& e)
             {
@@ -98,7 +100,12 @@ public:
                 std::this_thread::sleep_for(std::chrono::seconds(1));
                 continue;
             }
-            
+
+            while (clnts.count(clnt_sock)) // 之前的客户退出了，但还没有及时处理
+            {
+                std::this_thread::sleep_for(std::chrono::microseconds(1000));
+            }
+
             LOG4CPLUS_INFO(logger, "Connect with " + clnt->getIP() + ":" + std::to_string(clnt->getPort()));
             int target_epfd = pq.top();
             pq.pop();
@@ -108,9 +115,9 @@ public:
             LOG4CPLUS_DEBUG(logger, "epfd " + std::to_string(target_epfd) + ", active connections: " + std::to_string(epfds[target_epfd]));
 
             pq.push(target_epfd);
-            clnts[clnt->getSocket()] = clnt;
+            clnts[clnt_sock] = clnt;
 
-            event.data.fd = clnt->getSocket();
+            event.data.fd = clnt_sock;
             event.events = EPOLLIN;
 
             if(epoll_ctl(target_epfd, EPOLL_CTL_ADD, clnt->getSocket(), &event) < 0)
@@ -190,14 +197,7 @@ void doEpoll(RPCServer *server, int epfd)
             {
                 // Client disconnected
                 LOG4CPLUS_INFO(server->logger, "Connection with " +  IP + ":" + std::to_string(port) + " closed");
-                if(epoll_ctl(epfd, EPOLL_CTL_DEL, clnt->getSocket(), NULL) < 0)
-                {
-                    std::string errorMsg(strerror(errno));
-                    LOG4CPLUS_ERROR(server->errorLogger, "Remove clnt from epfd " 
-                    + std::to_string(epfd) + " error: " 
-                    + errorMsg);
-                }
-                closed_clients.emplace_back(clnt); // Collect closed client connections
+                closed_clients.emplace_back(std::move(clnt)); // Collect closed client connections
             }
 
             std::this_thread::sleep_for(std::chrono::microseconds(100)); // 给子线程 recv 时间，减少 epoll_wait 返回的次数（因为是 LT 模式）
@@ -210,10 +210,16 @@ void doEpoll(RPCServer *server, int epfd)
         // When the client is destroyed, it will automatically close the socket
         for (const auto &closed_clnt : closed_clients)
         {
-            auto clnt_socket = closed_clnt->getSocket();
-            server->clnts.erase(clnt_socket);
+            auto clnt_sock = closed_clnt->getSocket();
+            server->clnts.erase(clnt_sock);
             --server->epfds[epfd];
-            epoll_ctl(epfd, EPOLL_CTL_DEL, clnt_socket, NULL);
+            if(epoll_ctl(epfd, EPOLL_CTL_DEL, clnt_sock, NULL) < 0)
+            {
+                std::string errorMsg(strerror(errno));
+                LOG4CPLUS_ERROR(server->errorLogger, "Remove clnt from epfd " 
+                + std::to_string(epfd) + " error: " 
+                + errorMsg);
+            }
             LOG4CPLUS_DEBUG(server->logger, "Remove clnt from epfd " + std::to_string(epfd));
         }
 
