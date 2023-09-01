@@ -2,6 +2,7 @@
 #include <thread>
 #include <vector>
 #include <memory>
+#include <mutex>
 #include "People.h"
 #include "RPCClient.hpp"
 
@@ -107,15 +108,16 @@ void testConcurrency(const std::string& ip, uint16_t port, int num_threads)
 void testConcurrency_1(const std::string& ip, uint16_t port, int num_threads, int clntNum)
 {
     std::vector<std::thread> threads;
-    std::vector<std::unique_ptr<RPCClient>> clnts;
+    std::mutex mlock;
+    std::vector<std::shared_ptr<RPCClient>> clnts;
 
     for (int i = 0; i < num_threads; ++i)
     {
-        threads.emplace_back([&]
+        std::thread t([&](std::mutex &_mlock)
         {
             for(int i = 0; i < clntNum; ++i)
             {
-                std::unique_ptr<RPCClient> clnt(new RPCClient(ip, port));
+                std::shared_ptr<RPCClient> clnt(new RPCClient(ip, port));
                 try
                 {
                     std::cout << clnt->remoteCall<int>("add", 1, 1) << std::endl;                                              // std::function
@@ -126,11 +128,15 @@ void testConcurrency_1(const std::string& ip, uint16_t port, int num_threads, in
                 catch (const std::exception& e)
                 {
                     std::cerr << "Exception: " << e.what() << std::endl;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(_mlock);
                     clnts.emplace_back(std::move(clnt));
                 }
-                clnts.emplace_back(std::move(clnt));
             }
-        });
+        }, std::ref(mlock));
+
+        threads.emplace_back(std::move(t));
     }
 
     for (auto& thread : threads)
