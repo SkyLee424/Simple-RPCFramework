@@ -12,11 +12,13 @@ int main(int argc, char* argv[])
     uint16_t port = std::stoi(argv[2]);
     int opinion = std::stoi(argv[3]);
 
+    std::chrono::steady_clock::time_point start;
     try
     {
         switch (opinion)
         {
         case 0:
+            start = std::chrono::steady_clock::now();
             testBasicFeature(ip, port);
             break;
         case 1:
@@ -24,15 +26,19 @@ int main(int argc, char* argv[])
             int maxConnection;
             std::cout << "Input number of connections to test: ";
             std::cin >> maxConnection;
+            start = std::chrono::steady_clock::now();
             testMaxConnections(ip, port, maxConnection);
             break;
         }
         case 2:
         {
-            int threadNum;
-            std::cout << "Input number of connections to test: ";
+            int threadNum, clntNum;
+            std::cout << "Input number of thread to test: ";
             std::cin >> threadNum;
-            testConcurrency(ip, port, threadNum);
+            std::cout << "Input number of clients in a single thread: ";
+            std::cin >> clntNum;
+            start = std::chrono::steady_clock::now();
+            testConcurrency(ip, port, threadNum, clntNum);
             break;
         }
         case 3:
@@ -42,10 +48,12 @@ int main(int argc, char* argv[])
             std::cin >> threadNum;
             std::cout << "Input number of clients in a single thread: ";
             std::cin >> clntNum;
+            start = std::chrono::steady_clock::now();
             testConcurrency_1(ip, port, threadNum, clntNum);
             break;
         }
         default:
+            start = std::chrono::steady_clock::now();
             std::cout << "No such opinion, available opinion: 0, 1, 2, 3" << std::endl;
             break;
         }
@@ -54,4 +62,6 @@ int main(int argc, char* argv[])
     {
         std::cerr << e.what() << '\n';
     }
+    auto end = std::chrono::steady_clock::now();
+    std::cout << "Total cost time(ms): " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << std::endl;
 }

@@ -3,6 +3,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <atomic>
 #include "People.h"
 #include "RPCClient.hpp"
 
@@ -64,31 +65,35 @@ void testMaxConnections(const std::string& ip, uint16_t port, size_t taskNum)
  * @param port 
  * @param num_threads 
  */
-void testConcurrency(const std::string& ip, uint16_t port, int num_threads)
+void testConcurrency(const std::string& ip, uint16_t port, int num_threads, int clntNum)
 {
     std::vector<std::thread> threads;
+    std::mutex stdout_lock;
+    std::atomic<int> queryNo = 1;
 
+    
     for (int i = 0; i < num_threads; ++i)
     {
-        threads.emplace_back([&ip, port]
+        threads.emplace_back([&](std::mutex &_stdout_lock)
         {
-            for(int i = 0; i < 10; ++i)
+            for(int i = 0; i < clntNum; ++i)
             {
-                RPCClient clnt(ip, port);
-                
                 try
                 {
-                    std::cout << clnt.remoteCall<int>("add", 1, 1) << std::endl;                                              // std::function
-                    std::cout << clnt.remoteCall<int>("sub", 1, 1) << std::endl;                                              // normal function
-                    std::cout << clnt.remoteCall<int>("Foo::test1", 1, 17) << std::endl;                                      // member function
-                    std::cout << clnt.remoteCall<std::string>("hello") << std::endl;                                          // std::string return typr
+                    RPCClient clnt(ip, port);
+                    clnt.remoteCall<int>("add", 1, 1);
+                    clnt.remoteCall<int>("sub", 1, 1);
+                    clnt.remoteCall<int>("Foo::test1", 1, 17);
+                    clnt.remoteCall<std::string>("hello");
+                    std::lock_guard<std::mutex> lock(_stdout_lock);
+                    std::cout << "Query " << queryNo++ << " success." << std::endl;
                 }
                 catch (const std::exception& e)
                 {
                     std::cerr << "Exception: " << e.what() << std::endl;
                 }
             }
-        });
+        }, std::ref(stdout_lock));
     }
 
     for (auto& thread : threads)
@@ -108,33 +113,36 @@ void testConcurrency(const std::string& ip, uint16_t port, int num_threads)
 void testConcurrency_1(const std::string& ip, uint16_t port, int num_threads, int clntNum)
 {
     std::vector<std::thread> threads;
-    std::mutex mlock;
+    std::mutex clnts_lock, stdout_lock;
     std::vector<std::shared_ptr<RPCClient>> clnts;
+    std::atomic<int> queryNo = 1;
 
     for (int i = 0; i < num_threads; ++i)
     {
-        std::thread t([&](std::mutex &_mlock)
+        std::thread t([&](std::mutex &_clnts_lock, std::mutex &_stdout_lock)
         {
             for(int i = 0; i < clntNum; ++i)
             {
                 std::shared_ptr<RPCClient> clnt(new RPCClient(ip, port));
                 try
                 {
-                    std::cout << clnt->remoteCall<int>("add", 1, 1) << std::endl;                                              // std::function
-                    std::cout << clnt->remoteCall<int>("sub", 1, 1) << std::endl;                                              // normal function
-                    std::cout << clnt->remoteCall<int>("Foo::test1", 1, 17) << std::endl;                                      // member function
-                    std::cout << clnt->remoteCall<std::string>("hello") << std::endl;                                          // std::string return typr
+                    clnt->remoteCall<int>("add", 1, 1);                                              // std::function
+                    clnt->remoteCall<int>("sub", 1, 1);                                              // normal function
+                    clnt->remoteCall<int>("Foo::test1", 1, 17);                                      // member function
+                    clnt->remoteCall<std::string>("hello");                                          // std::string return type
+                    std::lock_guard<std::mutex> lock(_stdout_lock);
+                    std::cout << "Query " << queryNo++ << " success." << std::endl;
                 }
                 catch (const std::exception& e)
                 {
                     std::cerr << "Exception: " << e.what() << std::endl;
                 }
                 {
-                    std::lock_guard<std::mutex> lock(_mlock);
+                    std::lock_guard<std::mutex> lock(_clnts_lock);
                     clnts.emplace_back(std::move(clnt));
                 }
             }
-        }, std::ref(mlock));
+        }, std::ref(clnts_lock), std::ref(stdout_lock));
 
         threads.emplace_back(std::move(t));
     }
