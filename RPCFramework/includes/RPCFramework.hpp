@@ -45,7 +45,7 @@ invoke(Function &&f, Tuple &&tuple)
 class RPCFramework
 {
 public: 
-    static constexpr int DEFAULT_CRITICAL_TIME = 3; // 默认调用过程临界时间
+    static constexpr int DEFAULT_CRITICAL_TIME = 3000; // 默认调用过程临界时间，单位为 ms
 private:
     std::unordered_map<std::string, std::function<std::string(const std::string&)>> procedures;
     log4cplus::Logger logger;
