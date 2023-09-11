@@ -12,7 +12,7 @@
 #include <log4cplus/logger.h>
 #include <log4cplus/configurator.h>
 #include <log4cplus/loggingmacros.h>
-#include <iostream> // for debug
+#include <fcntl.h>
 
 class RPCServer;
 
@@ -34,14 +34,15 @@ private:
     ServerSocket serverSock;
     ThreadPool pool;
     RPCFramework framework;
-    std::unordered_map<int, int> epfds;                                // epfds[i]: 监视的 socket 的数量
-    std::unordered_map<int, std::shared_ptr<TCPSocket>> clnts;         // fd 对应的客户
-    std::priority_queue<int, std::vector<int>, decltype(cmp)> pq{cmp}; // 小根堆，每次选择监视 socket 数量最小的 epfd
-    log4cplus::Logger logger;                                          // 记录除了错误日志的其它日志
-    log4cplus::Logger errorLogger;                                     // 记录错误日志
+    std::unordered_map<int, int> epfds;                                                 // epfds[i]: 监视的 socket 的数量
+    std::unordered_map<int, std::unordered_map<int, std::shared_ptr<TCPSocket>>> clnts; // 每个 epfd 单独有一个 unordered_map 实例
+    std::unordered_map<int, std::pair<std::mutex, std::condition_variable>> clnts_lock; // 每个 epfd 对应的客户的锁
+    std::priority_queue<int, std::vector<int>, decltype(cmp)> pq{cmp};      // 小根堆，每次选择监视 socket 数量最小的 epfd
+    log4cplus::Logger logger;                                               // 记录除了错误日志的其它日志
+    log4cplus::Logger errorLogger;                                          // 记录错误日志
 
 public:
-    static constexpr size_t DEFAULT_THREAD_HOLD = 6;          // 默认线程数
+    static constexpr size_t DEFAULT_EPOLL_HOLD = 6;           // 默认创建 epoll 实例数
     static constexpr size_t DEFAULT_BACKLOG = 511;            // 默认全连接数，即支持同时连接的用户个数 - 1
     static constexpr size_t DEFAULT_TASK_THREAD_HOLD = 6;     // 默认一个 epoll 实例最多可以开的线程数
     static constexpr size_t DEFAULT_EPOLL_BUFFER_SIZE = 1024; // 默认一个 epoll 实例的 buffer 的大小
@@ -50,9 +51,9 @@ public:
            size_t backlog = DEFAULT_BACKLOG,
            size_t epoll_buffer_size = DEFAULT_EPOLL_BUFFER_SIZE,
            size_t procedure_critical_time = RPCFramework::DEFAULT_CRITICAL_TIME,
-           size_t thread_hold = DEFAULT_THREAD_HOLD, size_t task_thread_hold = DEFAULT_TASK_THREAD_HOLD)
+           size_t epoll_hold = DEFAULT_EPOLL_HOLD, size_t task_thread_hold = DEFAULT_TASK_THREAD_HOLD)
         : serverSock(ip, port, backlog), epoll_buffer_size(epoll_buffer_size)
-        ,pool(thread_hold), task_thread(task_thread_hold)
+        ,pool(epoll_hold), task_thread(task_thread_hold)
         ,framework(procedure_critical_time)
     {
         log4cplus::initialize();
@@ -67,12 +68,14 @@ public:
             std::cerr << e.what() << '\n';
             exit(-1);
         }
-        
-        for (size_t i = 0; i < thread_hold; ++i) // 创建 epfd
+
+        for (size_t i = 0; i < epoll_hold; ++i) // 创建 epfd
         {
             int epfd = epoll_create(1024);
             epfds[epfd] = 0;
             pq.push(epfd);
+            clnts[epfd].clear();
+            clnts_lock[epfd];  // 初始化锁和条件变量
             pool.enqueue(doEpoll, this, epfd);
         }
     }
@@ -93,6 +96,10 @@ public:
             {
                 clnt.reset(serverSock.accept());
                 clnt_sock = clnt->getSocket();
+                // 设置为非阻塞 IO
+                int flag = fcntl(clnt_sock, F_GETFL);
+                flag |= O_NONBLOCK;
+                fcntl(clnt_sock, F_SETFL, flag);
             }
             catch(const std::exception& e)
             {
@@ -100,33 +107,35 @@ public:
                 std::this_thread::sleep_for(std::chrono::seconds(1));
                 continue;
             }
-
-            while (clnts.count(clnt_sock)) // 之前的客户退出了，但还没有及时处理
-            {
-                std::this_thread::sleep_for(std::chrono::microseconds(1000));
-            }
-
+            
             LOG4CPLUS_INFO(logger, "Connect with " + clnt->getIP() + ":" + std::to_string(clnt->getPort()));
+            for(auto & e : clnts)
+            {
+                int cur_epfd = e.first;
+                std::unique_lock<std::mutex> ulock(clnts_lock[cur_epfd].first);
+                while (e.second.count(clnt_sock))
+                {
+                    clnts_lock[cur_epfd].second.wait(ulock);
+                }
+            }
+            
             int target_epfd = pq.top();
             pq.pop();
 
             ++epfds[target_epfd];
 
-            LOG4CPLUS_DEBUG(logger, "epfd " + std::to_string(target_epfd) + ", active connections: " + std::to_string(epfds[target_epfd]));
-
             pq.push(target_epfd);
-            clnts[clnt_sock] = clnt;
+            clnts[target_epfd][clnt_sock] = clnt;
 
             event.data.fd = clnt_sock;
-            event.events = EPOLLIN;
+            event.events = EPOLLIN | EPOLLET; // 边缘触发
 
-            if(epoll_ctl(target_epfd, EPOLL_CTL_ADD, clnt->getSocket(), &event) < 0)
+            if(epoll_ctl(target_epfd, EPOLL_CTL_ADD, clnt_sock, &event) < 0)
             {
                 std::string errorMsg(strerror(errno));
                 LOG4CPLUS_ERROR(errorLogger, "Add clnt to epfd failed, " + errorMsg);
                 continue;
             }
-            LOG4CPLUS_DEBUG(logger, "Add clnt to epfd " + std::to_string(target_epfd));
         }
     }
 
@@ -153,6 +162,9 @@ void doEpoll(RPCServer *server, int epfd)
 {
     ThreadPool pool(server->task_thread);
     epoll_event events[server->epoll_buffer_size];
+    std::unordered_map<int, std::shared_ptr<TCPSocket>> &clnts = server->clnts[epfd];
+    std::mutex &clnt_lock = std::ref(server->clnts_lock[epfd].first);
+    std::condition_variable &clnt_cond = std::ref(server->clnts_lock[epfd].second);
 
     while (true)
     {
@@ -164,12 +176,6 @@ void doEpoll(RPCServer *server, int epfd)
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
         size_t dur_ms = duration.count();
 
-        if(dur_ms > 1000) // 等待时间大于 1000ms
-            LOG4CPLUS_DEBUG(server->logger, "epfd: " + std::to_string(epfd) 
-            + " epoll_wait cost time: " 
-            + std::to_string(dur_ms) 
-            + " ms, event number: " + std::to_string(eventsNum));
-
         if (eventsNum == -1)
         {
             std::string errorMsg(strerror(errno));
@@ -178,55 +184,68 @@ void doEpoll(RPCServer *server, int epfd)
         }
         
         std::vector<std::shared_ptr<TCPSocket>> closed_clients; // 使用智能指针管理
+        std::atomic<int> complete = 0;                          // 完成任务的线程数量
+        std::mutex vlock;                                       // 保护 closed_clients;
+        std::condition_variable cond;
 
+        // 还有一种情况：由于网络拥塞，客户端的断开连接请求先到，其它请求来得比较晚，导致服务器先断开连接，后续到的请求就无法处理了
+        // 可不可以试试设置等待时间，超过该时间，服务器直接释放连接，后续请求不做处理？
         for (size_t event = 0; event < eventsNum; ++event)
         {
-            if(!server->clnts.count(events[event].data.fd)) // 有可能是过期的事件（已经处理）
-                continue;
-            auto clnt = server->clnts[events[event].data.fd];
+            size_t clnt_sock = events[event].data.fd; // SIGSEGV ？？
+            auto clnt = clnts[clnt_sock]; // 这里需要线程同步，确保有 clnt_sock，让该线程先执行清理操作，再让主线程将新的客户端套接字添加到 clnts 中
             std::string IP = clnt->getIP();
             uint16_t port = clnt->getPort();
-
-            try
+            // 提交任务到线程池，后台执行
+            pool.enqueue([&, IP, port, clnt, server](std::mutex &_vlock) 
             {
-                std::string req = clnt->receive();
-                std::string ret = server->framework.handleRequest(req);
-                clnt->send(ret);
-            }
-            catch (const std::exception &excp)
-            {
-                // Client disconnected
-                LOG4CPLUS_INFO(server->logger, "Connection with " +  IP + ":" + std::to_string(port) + " closed");
-                closed_clients.emplace_back(std::move(clnt)); // Collect closed client connections
-            }
-
-            std::this_thread::sleep_for(std::chrono::microseconds(100)); // 给子线程 recv 时间，减少 epoll_wait 返回的次数（因为是 LT 模式）
+                try
+                {
+                    std::string req = clnt->receive();
+                    std::string ret = server->framework.handleRequest(req);
+                    clnt->send(ret);
+                    ++complete;
+                    if(complete == eventsNum)
+                        cond.notify_all();
+                }
+                catch (const std::exception &excp)
+                {
+                    // Client disconnected
+                    LOG4CPLUS_INFO(server->logger, "Connection with " + IP + ":" + std::to_string(port) + " closed");
+                    std::lock_guard<std::mutex> lock(_vlock);
+                    closed_clients.emplace_back(clnt); // Collect closed client connections
+                    ++complete;
+                    if(complete == eventsNum)
+                        cond.notify_all();
+                } 
+            },std::ref(vlock));
         }
-        
-        startTime = std::chrono::steady_clock::now();
-        auto clntNum = closed_clients.size();
 
-        // Clean up closed client connections
-        // When the client is destroyed, it will automatically close the socket
-        for (const auto &closed_clnt : closed_clients)
+        std::unique_lock<std::mutex> ulock(vlock);
+        while (complete != eventsNum) // 等待所有任务执行完毕，否则可能无法正确关闭客户端套接字
         {
-            auto clnt_sock = closed_clnt->getSocket();
-            server->clnts.erase(clnt_sock);
-            --server->epfds[epfd];
-            if(epoll_ctl(epfd, EPOLL_CTL_DEL, clnt_sock, NULL) < 0)
-            {
-                std::string errorMsg(strerror(errno));
-                LOG4CPLUS_ERROR(server->errorLogger, "Remove clnt from epfd " 
-                + std::to_string(epfd) + " error: " 
-                + errorMsg);
-            }
-            LOG4CPLUS_DEBUG(server->logger, "Remove clnt from epfd " + std::to_string(epfd));
+            cond.wait(ulock);
         }
 
-        endTime = std::chrono::steady_clock::now();
-        duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
-        dur_ms = duration.count();
-        if(dur_ms > 1000)
-            LOG4CPLUS_WARN(server->logger, "Close " + std::to_string(clntNum) + " clnt cost time: " + std::to_string(dur_ms));
+        {
+            std::lock_guard<std::mutex> lock(clnt_lock);
+
+            // Clean up closed client connections
+            // When the client is destroyed, it will automatically close the socket
+            for (const auto &closed_clnt : closed_clients)
+            {
+                auto clnt_sock = closed_clnt->getSocket();
+                clnts.erase(clnt_sock);
+                --server->epfds[epfd];
+                if(epoll_ctl(epfd, EPOLL_CTL_DEL, clnt_sock, NULL) < 0)
+                {
+                    std::string errorMsg(strerror(errno));
+                    LOG4CPLUS_ERROR(server->errorLogger, "Remove clnt from epfd " 
+                    + std::to_string(epfd) + " error: " 
+                    + errorMsg);
+                }
+            }            
+        }
+        clnt_cond.notify_all();
     }
 }
