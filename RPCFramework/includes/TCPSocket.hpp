@@ -109,8 +109,6 @@ public:
                 std::string errorMsg(strerror(errno));
                 throw std::runtime_error("recv error: " + errorMsg);
             }
-            else if(chunkSize == 0)
-                throw std::logic_error("clnt exit");
 
             remainingSize -= chunkSize;
             offset += chunkSize;
