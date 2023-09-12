@@ -21,28 +21,20 @@ void doEpoll(RPCServer *server, int epfd);
 class RPCServer
 {
     friend void doEpoll(RPCServer *server, int epfd);
-
-    std::function<bool(int, int)> cmp = [this](int epfd0, int epfd1) -> bool
-    {
-        return epfds.at(epfd0) > epfds.at(epfd1);
-    };
-
 private:
     size_t task_thread;
     size_t epoll_buffer_size;
+    int epfd;
+
+    std::unordered_map<int, std::shared_ptr<TCPSocket>> clnts;
 
     ServerSocket serverSock;
-    ThreadPool pool;
     RPCFramework framework;
-    std::unordered_map<int, int> epfds;                                                 // epfds[i]: 监视的 socket 的数量
-    std::unordered_map<int, std::unordered_map<int, std::shared_ptr<TCPSocket>>> clnts; // 每个 epfd 单独有一个 unordered_map 实例
-    std::unordered_map<int, std::pair<std::mutex, std::condition_variable>> clnts_lock; // 每个 epfd 对应的客户的锁
-    std::priority_queue<int, std::vector<int>, decltype(cmp)> pq{cmp};      // 小根堆，每次选择监视 socket 数量最小的 epfd
+    
     log4cplus::Logger logger;                                               // 记录除了错误日志的其它日志
     log4cplus::Logger errorLogger;                                          // 记录错误日志
 
 public:
-    static constexpr size_t DEFAULT_EPOLL_HOLD = 6;           // 默认创建 epoll 实例数
     static constexpr size_t DEFAULT_BACKLOG = 511;            // 默认全连接数，即支持同时连接的用户个数 - 1
     static constexpr size_t DEFAULT_TASK_THREAD_HOLD = 6;     // 默认一个 epoll 实例最多可以开的线程数
     static constexpr size_t DEFAULT_EPOLL_BUFFER_SIZE = 1024; // 默认一个 epoll 实例的 buffer 的大小
@@ -51,9 +43,10 @@ public:
            size_t backlog = DEFAULT_BACKLOG,
            size_t epoll_buffer_size = DEFAULT_EPOLL_BUFFER_SIZE,
            size_t procedure_critical_time = RPCFramework::DEFAULT_CRITICAL_TIME,
-           size_t epoll_hold = DEFAULT_EPOLL_HOLD, size_t task_thread_hold = DEFAULT_TASK_THREAD_HOLD)
+           size_t task_thread_hold = DEFAULT_TASK_THREAD_HOLD)
         : serverSock(ip, port, backlog), epoll_buffer_size(epoll_buffer_size)
-        ,pool(epoll_hold), task_thread(task_thread_hold)
+        ,epfd(epoll_create(1024))
+        ,task_thread(task_thread_hold)
         ,framework(procedure_critical_time)
     {
         log4cplus::initialize();
@@ -69,20 +62,14 @@ public:
             exit(-1);
         }
 
-        for (size_t i = 0; i < epoll_hold; ++i) // 创建 epfd
-        {
-            int epfd = epoll_create(1024);
-            epfds[epfd] = 0;
-            pq.push(epfd);
-            clnts[epfd].clear();
-            clnts_lock[epfd];  // 初始化锁和条件变量
-            pool.enqueue(doEpoll, this, epfd);
-        }
+        std::thread handle_thread(doEpoll, this, epfd); // 子线程处理客户端的请求（包括断开连接请求）
+        handle_thread.detach();
     }
 
     ~RPCServer()
     {
         serverSock.close();
+        close(epfd); // 关闭 epoll 实例
     }
 
     void start(void)
@@ -91,10 +78,10 @@ public:
         while (true)
         {
             std::shared_ptr<TCPSocket> clnt(nullptr);
-            uint16_t clnt_sock = -1;
+            int clnt_sock = -1;
             try
             {
-                clnt.reset(serverSock.accept());
+                clnt.reset(serverSock.accept()); // 主线程处理连接请求
                 clnt_sock = clnt->getSocket();
                 // 设置为非阻塞 IO
                 int flag = fcntl(clnt_sock, F_GETFL);
@@ -109,28 +96,14 @@ public:
             }
             
             LOG4CPLUS_INFO(logger, "Connect with " + clnt->getIP() + ":" + std::to_string(clnt->getPort()));
-            for(auto & e : clnts)
-            {
-                int cur_epfd = e.first;
-                std::unique_lock<std::mutex> ulock(clnts_lock[cur_epfd].first);
-                while (e.second.count(clnt_sock))
-                {
-                    clnts_lock[cur_epfd].second.wait(ulock);
-                }
-            }
             
-            int target_epfd = pq.top();
-            pq.pop();
-
-            ++epfds[target_epfd];
-
-            pq.push(target_epfd);
-            clnts[target_epfd][clnt_sock] = clnt;
+            // 是否需要等待 doEpoll 线程清理套接字？
+            clnts.insert({clnt_sock, clnt}); // 使用 insert，而不是 operator[]
 
             event.data.fd = clnt_sock;
             event.events = EPOLLIN | EPOLLET; // 边缘触发
 
-            if(epoll_ctl(target_epfd, EPOLL_CTL_ADD, clnt_sock, &event) < 0)
+            if(epoll_ctl(epfd, EPOLL_CTL_ADD, clnt_sock, &event) < 0)
             {
                 std::string errorMsg(strerror(errno));
                 LOG4CPLUS_ERROR(errorLogger, "Add clnt to epfd failed, " + errorMsg);
@@ -162,19 +135,10 @@ void doEpoll(RPCServer *server, int epfd)
 {
     ThreadPool pool(server->task_thread);
     epoll_event events[server->epoll_buffer_size];
-    std::unordered_map<int, std::shared_ptr<TCPSocket>> &clnts = server->clnts[epfd];
-    std::mutex &clnt_lock = std::ref(server->clnts_lock[epfd].first);
-    std::condition_variable &clnt_cond = std::ref(server->clnts_lock[epfd].second);
 
     while (true)
     {
-        int eventsNum = 0;
-
-        auto startTime = std::chrono::steady_clock::now();
-        eventsNum = epoll_wait(epfd, events, sizeof(events), -1);
-        auto endTime = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
-        size_t dur_ms = duration.count();
+        int eventsNum = epoll_wait(epfd, events, server->epoll_buffer_size, -1);
 
         if (eventsNum == -1)
         {
@@ -192,33 +156,50 @@ void doEpoll(RPCServer *server, int epfd)
         // 可不可以试试设置等待时间，超过该时间，服务器直接释放连接，后续请求不做处理？
         for (size_t event = 0; event < eventsNum; ++event)
         {
-            size_t clnt_sock = events[event].data.fd; // SIGSEGV ？？
-            auto clnt = clnts[clnt_sock]; // 这里需要线程同步，确保有 clnt_sock，让该线程先执行清理操作，再让主线程将新的客户端套接字添加到 clnts 中
-            std::string IP = clnt->getIP();
-            uint16_t port = clnt->getPort();
-            // 提交任务到线程池，后台执行
-            pool.enqueue([&, IP, port, clnt, server](std::mutex &_vlock) 
+            size_t clnt_sock = events[event].data.fd;
+            std::shared_ptr<TCPSocket> clnt = nullptr;
+            try
             {
+                clnt = server->clnts.at(clnt_sock); // 使用 at，而不是 operator[]
+            }
+            catch(const std::exception& e)
+            {
+                LOG4CPLUS_WARN(server->logger, "No such clnt, clnt_sock: " + std::to_string(clnt_sock) + ", trying to get it again...");
+                --event;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
+            
+            // 提交任务到线程池，后台执行
+            pool.enqueue([&, server](std::shared_ptr<TCPSocket> _clnt, std::mutex &_vlock) 
+            {
+                std::string IP = _clnt->getIP();
+                uint16_t port = _clnt->getPort();
+                std::string req = "";
+                
                 try
                 {
-                    std::string req = clnt->receive();
-                    std::string ret = server->framework.handleRequest(req);
-                    clnt->send(ret);
-                    ++complete;
-                    if(complete == eventsNum)
-                        cond.notify_all();
+                    req = _clnt->receive();
                 }
                 catch (const std::exception &excp)
                 {
+                    std::string excp_msg = excp.what();
+                    if(excp_msg != "recv error: Success")
+                        LOG4CPLUS_WARN(server->logger, "Receive message from clnt error, error message: " + excp_msg);
+                    else 
+                        LOG4CPLUS_INFO(server->logger, "Connection with " + IP + ":" + std::to_string(port) + " closed");
                     // Client disconnected
-                    LOG4CPLUS_INFO(server->logger, "Connection with " + IP + ":" + std::to_string(port) + " closed");
                     std::lock_guard<std::mutex> lock(_vlock);
-                    closed_clients.emplace_back(clnt); // Collect closed client connections
-                    ++complete;
-                    if(complete == eventsNum)
-                        cond.notify_all();
+                    closed_clients.emplace_back(_clnt); // Collect closed client connections
                 } 
-            },std::ref(vlock));
+
+                std::string ret = server->framework.handleRequest(req); // 暂时不处理异常
+                _clnt->send(ret);
+
+                ++complete;
+                if(complete == eventsNum)
+                    cond.notify_all();
+            }, clnt, std::ref(vlock));
         }
 
         std::unique_lock<std::mutex> ulock(vlock);
@@ -228,15 +209,14 @@ void doEpoll(RPCServer *server, int epfd)
         }
 
         {
-            std::lock_guard<std::mutex> lock(clnt_lock);
+            // 这里需不需要与主线程同步？
 
             // Clean up closed client connections
             // When the client is destroyed, it will automatically close the socket
             for (const auto &closed_clnt : closed_clients)
             {
                 auto clnt_sock = closed_clnt->getSocket();
-                clnts.erase(clnt_sock);
-                --server->epfds[epfd];
+                server->clnts.erase(clnt_sock);
                 if(epoll_ctl(epfd, EPOLL_CTL_DEL, clnt_sock, NULL) < 0)
                 {
                     std::string errorMsg(strerror(errno));
@@ -246,6 +226,5 @@ void doEpoll(RPCServer *server, int epfd)
                 }
             }            
         }
-        clnt_cond.notify_all();
     }
 }
