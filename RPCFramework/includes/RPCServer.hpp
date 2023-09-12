@@ -156,7 +156,7 @@ void doEpoll(RPCServer *server, int epfd)
             continue;
         }
         
-        std::vector<std::shared_ptr<TCPSocket>> closed_clients; // 使用智能指针管理
+        std::unordered_set<std::shared_ptr<TCPSocket>> closed_clients; // 使用智能指针管理
         std::atomic<int> complete = 0;                          // 完成任务的线程数量
         std::mutex vlock;                                       // 保护 closed_clients;
         std::condition_variable cond;
@@ -199,11 +199,12 @@ void doEpoll(RPCServer *server, int epfd)
                         LOG4CPLUS_INFO(server->logger, "Connection with " + IP + ":" + std::to_string(port) + " closed");
                     // Client disconnected
                     std::lock_guard<std::mutex> lock(_vlock);
-                    closed_clients.emplace_back(_clnt); // Collect closed client connections
+                    closed_clients.insert(_clnt); // Collect closed client connections
                 } 
 
                 std::string ret = server->framework.handleRequest(req); // 暂时不处理异常
-                _clnt->send(ret);
+                if(!closed_clients.count(_clnt)) // 确保该客户仍正常连接，否则会引发管道破裂
+                    _clnt->send(ret);
 
                 ++complete;
                 if(complete == eventsNum)
