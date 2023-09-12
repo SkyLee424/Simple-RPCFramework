@@ -17,7 +17,6 @@
 - 使用 **模版元编程** ，支持注册任意普通函数、std::function 对象、类成员函数
 - 使用 Serializer 类来实现任意对象的 **序列化和反序列化**
 - 使用 **ThreadPool + epoll** 处理客户端的请求
-- 使用 std::priority_queue 实现简单的 **负载均衡**
 - 使用 shared_ptr 管理客户端套接字，确保连接正确释放
 - 使用 log4cplus 记录日志
 
@@ -30,7 +29,7 @@
 
 ## 已知问题
 
-- RPCFramework 在释放连接的过程中，有较低可能出现段错误（待解决）
+- 客户端测试平台系统为 macOS 13 时，会遇到请求阻塞的问题，在 CentOS 7 上目前没有发现该问题
 
 详细的介绍分别在 `SimpleVer/readme.md` 和 `RPCFramework/readme.md` 中
 

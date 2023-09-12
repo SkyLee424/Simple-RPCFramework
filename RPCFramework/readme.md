@@ -1,5 +1,9 @@
 # RPCFramework
 
+----
+
+9 月 12 日更新：几乎重写了服务器架构，仅采用一个 epoll 实例，解决了之前的段错误问题
+
 ---- 
 
 8 月 27 日更新：重写了序列化与反序列化，支持常用 STL，自定义类型的序列化变得更加简单！
@@ -27,8 +31,7 @@
 ### 服务端部分
 
 - 使用 **ThreadPool + epoll** 处理客户端的请求
-- 使用 std::priority_queue 实现简单的 **负载均衡**
-- 使用 shared_ptr 管理客户端套接字，确保连接正确释放
+- 使用 **shared_ptr** 管理客户端套接字，确保连接正确释放
 - 使用 log4cplus 记录日志
 
 ## 示例
@@ -98,7 +101,7 @@ void testBasicFeature(const std::string& ip, uint16_t port)
         clnt.remoteCall<void>("show", 114514);                                                                    // void return type
         clnt.remoteCall<void>("func1");                                                                           // void return type, no parma
         std::cout << clnt.remoteCall<int>("Foo::test1", 1, 17) << std::endl;                                      // member function
-        std::cout << clnt.remoteCall<std::string>("hello") << std::endl;                                          // std::string return typr
+        std::cout << clnt.remoteCall<std::string>("hello") << std::endl;                                          // std::string return type
         clnt.remoteCall<void>("testString", 1, std::string("hello, server!"), 1.1, std::string("RPC Framework")); // std::string parma
 
         People HeXin;
@@ -134,6 +137,8 @@ void testBasicFeature(const std::string& ip, uint16_t port)
 完整的测试代码均在 `RPCFramework/Example/` 下
 
 注意编译的时候，C++ 标准大于等于 C++17，并且链接 log4cplus 和 pthread 库
+
+<!-- 这里可以补充并发量的测试结果 -->
 
 ## 注意事项
 
@@ -369,27 +374,32 @@ public:
 
 自定义类型需要继承 Serializable 类，并重写 `Serialize` 和 `DeSerialize` 方法
 
-<!-- 这里可以添加一个仓库的地址 -->
+Serializer 工具类也已经上传到另一个 [仓库](https://github.com/SkyLee424/Simple-Serialize-Tool) 了，可以去看看
 
 ## 服务端「接受用户请求--处理用户请求--返回调用结果」的过程
 
 整个服务端的架构如图所示：
 
-![](images/IMG_3043.jpg)
+![](images/IMG_94D6F9B9C7F5-1.jpeg)
 
 ### 工作流程
 
 #### 接受用户请求
 
-- 创建服务器，同时开一个线程池，并创建对应的 epoll 实例，将 epoll 实例传给任务函数
-- 主线程 accept 客户的请求，并根据各个 epoll 实例的负载情况，选择合适的 epoll 实例
-- 将客户的套接字添加到选择的 epoll 实例的感兴趣的事件中
+接受用户请求这一步由主线程完成，在主线程中：
+
+- 创建服务器，并创建一个 epoll 实例，将 epoll 实例传给任务函数 `doEpoll`
+- 主线程 accept 客户的请求，将客户端套接字存放在容器中
+- 主线程将客户的套接字添加到选择的 epoll 实例的感兴趣的事件中
 
 #### 处理用户请求与返回调用结果
 
+处理用户请求与返回调用结果这一步由 `handle_thread` 完成，在 `handle_thread` 中：
+
 - epoll_wait 返回后，遍历 epoll_events，将用户请求传给工作线程
 - 工作线程在后台处理任务，并在处理完成后，返回调用结果
-- 若用户提出关闭连接的请求，工作线程会将用户的套接字加入到 `closed_clients` 中，由父线程统一关闭套接字和释放内存
+  - 若用户提出释放连接的请求，工作线程会将用户的套接字加入到 `closed_clients` 中，由 `handle_thread` 统一关闭套接字和释放内存
+- `handle_thread` 等待这一轮 `epoll_wait` 的所有任务完成后，受理客户端的释放连接请求
 
 ## 局限性
 
