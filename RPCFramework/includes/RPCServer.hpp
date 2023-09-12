@@ -43,74 +43,12 @@ public:
            size_t backlog = DEFAULT_BACKLOG,
            size_t epoll_buffer_size = DEFAULT_EPOLL_BUFFER_SIZE,
            size_t procedure_critical_time = RPCFramework::DEFAULT_CRITICAL_TIME,
-           size_t task_thread_hold = DEFAULT_TASK_THREAD_HOLD)
-        : serverSock(ip, port, backlog), epoll_buffer_size(epoll_buffer_size)
-        ,epfd(epoll_create(1024))
-        ,task_thread(task_thread_hold)
-        ,framework(procedure_critical_time)
-    {
-        log4cplus::initialize();
-        log4cplus::PropertyConfigurator::doConfigure("Log/config/log4cplus.properties"); // 配置文件的路径
-        try
-        {
-            logger = log4cplus::Logger::getInstance("ServerLogger"); // 要使用的日志记录器
-            errorLogger = log4cplus::Logger::getInstance("ErrorLogger");
-        }
-        catch(const std::exception& e)
-        {
-            std::cerr << e.what() << '\n';
-            exit(-1);
-        }
+           size_t task_thread_hold = DEFAULT_TASK_THREAD_HOLD);
+        
 
-        std::thread handle_thread(doEpoll, this, epfd); // 子线程处理客户端的请求（包括断开连接请求）
-        handle_thread.detach();
-    }
+    ~RPCServer();
 
-    ~RPCServer()
-    {
-        serverSock.close();
-        close(epfd); // 关闭 epoll 实例
-    }
-
-    void start(void)
-    {
-        epoll_event event;
-        while (true)
-        {
-            std::shared_ptr<TCPSocket> clnt(nullptr);
-            int clnt_sock = -1;
-            try
-            {
-                clnt.reset(serverSock.accept()); // 主线程处理连接请求
-                clnt_sock = clnt->getSocket();
-                // 设置为非阻塞 IO
-                int flag = fcntl(clnt_sock, F_GETFL);
-                flag |= O_NONBLOCK;
-                fcntl(clnt_sock, F_SETFL, flag);
-            }
-            catch(const std::exception& e)
-            {
-                LOG4CPLUS_ERROR(errorLogger, e.what());
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-                continue;
-            }
-            
-            LOG4CPLUS_INFO(logger, "Connect with " + clnt->getIP() + ":" + std::to_string(clnt->getPort()));
-            
-            // 是否需要等待 doEpoll 线程清理套接字？
-            clnts.insert({clnt_sock, clnt}); // 使用 insert，而不是 operator[]
-
-            event.data.fd = clnt_sock;
-            event.events = EPOLLIN | EPOLLET; // 边缘触发
-
-            if(epoll_ctl(epfd, EPOLL_CTL_ADD, clnt_sock, &event) < 0)
-            {
-                std::string errorMsg(strerror(errno));
-                LOG4CPLUS_ERROR(errorLogger, "Add clnt to epfd failed, " + errorMsg);
-                continue;
-            }
-        }
-    }
+    void start(void);
 
     template <typename Func>
     void registerProcedure(const std::string &name, Func procedure);
@@ -118,6 +56,37 @@ public:
     template <typename Obj, typename Func>
     void registerProcedure(const std::string &name, Obj &obj, Func procedure);
 };
+
+RPCServer::RPCServer(const std::string &ip, uint16_t port,
+                     size_t backlog,
+                     size_t epoll_buffer_size,
+                     size_t procedure_critical_time,
+                     size_t task_thread_hold)
+    : serverSock(ip, port, backlog), epoll_buffer_size(epoll_buffer_size), epfd(epoll_create(1024)), task_thread(task_thread_hold), framework(procedure_critical_time)
+{
+    log4cplus::initialize();
+    log4cplus::PropertyConfigurator::doConfigure("Log/config/log4cplus.properties"); // 配置文件的路径
+    try
+    {
+        logger = log4cplus::Logger::getInstance("ServerLogger"); // 要使用的日志记录器
+        errorLogger = log4cplus::Logger::getInstance("ErrorLogger");
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << e.what() << '\n';
+        exit(-1);
+    }
+
+    std::thread handle_thread(doEpoll, this, epfd); // 子线程处理客户端的请求（包括断开连接请求）
+    handle_thread.detach();
+}
+
+inline
+RPCServer::~RPCServer()
+{
+    serverSock.close();
+    close(epfd); // 关闭 epoll 实例
+}
 
 template <typename Func>
 void RPCServer::registerProcedure(const std::string &name, Func procedure)
@@ -129,6 +98,46 @@ template <typename Obj, typename Func>
 void RPCServer::registerProcedure(const std::string &name, Obj &obj, Func procedure)
 {
     framework.registerProcedure(name, obj, procedure);
+}
+
+void RPCServer::start(void)
+{
+    epoll_event event;
+    while (true)
+    {
+        std::shared_ptr<TCPSocket> clnt(nullptr);
+        int clnt_sock = -1;
+        try
+        {
+            clnt.reset(serverSock.accept()); // 主线程处理连接请求
+            clnt_sock = clnt->getSocket();
+            // 设置为非阻塞 IO
+            int flag = fcntl(clnt_sock, F_GETFL);
+            flag |= O_NONBLOCK;
+            fcntl(clnt_sock, F_SETFL, flag);
+        }
+        catch(const std::exception& e)
+        {
+            LOG4CPLUS_ERROR(errorLogger, e.what());
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
+        }
+        
+        LOG4CPLUS_INFO(logger, "Connect with " + clnt->getIP() + ":" + std::to_string(clnt->getPort()));
+        
+        // 是否需要等待 doEpoll 线程清理套接字？
+        clnts.insert({clnt_sock, clnt}); // 使用 insert，而不是 operator[]
+
+        event.data.fd = clnt_sock;
+        event.events = EPOLLIN | EPOLLET; // 边缘触发
+
+        if(epoll_ctl(epfd, EPOLL_CTL_ADD, clnt_sock, &event) < 0)
+        {
+            std::string errorMsg(strerror(errno));
+            LOG4CPLUS_ERROR(errorLogger, "Add clnt to epfd failed, " + errorMsg);
+            continue;
+        }
+    }
 }
 
 void doEpoll(RPCServer *server, int epfd)
