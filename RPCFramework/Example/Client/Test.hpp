@@ -68,38 +68,38 @@ void testMaxConnections(const std::string& ip, uint16_t port, size_t taskNum)
 void testConcurrency(const std::string& ip, uint16_t port, int num_threads, int clntNum)
 {
     std::vector<std::thread> threads;
-    std::mutex stdout_lock;
-    std::atomic<int> queryNo = 1;
-
+    std::atomic<int> successNum = 0;
     
     for (int i = 0; i < num_threads; ++i)
     {
-        threads.emplace_back([&](std::mutex &_stdout_lock)
+        threads.emplace_back([&]()
         {
             for(int i = 0; i < clntNum; ++i)
             {
                 try
                 {
                     RPCClient clnt(ip, port);
-                    clnt.remoteCall<int>("add", 1, 1);
-                    clnt.remoteCall<int>("sub", 1, 1);
-                    clnt.remoteCall<int>("Foo::test1", 1, 17);
-                    clnt.remoteCall<std::string>("hello");
-                    std::lock_guard<std::mutex> lock(_stdout_lock);
-                    std::cout << "Query " << queryNo++ << " success." << std::endl;
+                    if(clnt.remoteCall<int>("add", 1, 1) == 2)
+                        ++successNum;
+                    if(clnt.remoteCall<int>("sub", 1, 1) == 0)
+                        ++successNum;
+                    if(clnt.remoteCall<std::string>("hello") == "hello, clnt!\nhahaha")
+                        ++successNum;
                 }
                 catch (const std::exception& e)
                 {
                     std::cerr << "Exception: " << e.what() << std::endl;
                 }
             }
-        }, std::ref(stdout_lock));
+        });
     }
 
     for (auto& thread : threads)
     {
         thread.join();
     }
+
+    std::cout << "Success query: " << successNum << std::endl;
 }
 
 /**
@@ -113,25 +113,25 @@ void testConcurrency(const std::string& ip, uint16_t port, int num_threads, int 
 void testConcurrency_1(const std::string& ip, uint16_t port, int num_threads, int clntNum)
 {
     std::vector<std::thread> threads;
-    std::mutex clnts_lock, stdout_lock;
+    std::mutex clnts_lock;
     std::vector<std::shared_ptr<RPCClient>> clnts;
-    std::atomic<int> queryNo = 1;
+    std::atomic<int> successNum = 0;
 
     for (int i = 0; i < num_threads; ++i)
     {
-        std::thread t([&](std::mutex &_clnts_lock, std::mutex &_stdout_lock)
+        std::thread t([&](std::mutex &_clnts_lock)
         {
             for(int i = 0; i < clntNum; ++i)
             {
                 std::shared_ptr<RPCClient> clnt(new RPCClient(ip, port));
                 try
                 {
-                    clnt->remoteCall<int>("add", 1, 1);                                              // std::function
-                    clnt->remoteCall<int>("sub", 1, 1);                                              // normal function
-                    clnt->remoteCall<int>("Foo::test1", 1, 17);                                      // member function
-                    clnt->remoteCall<std::string>("hello");                                          // std::string return type
-                    std::lock_guard<std::mutex> lock(_stdout_lock);
-                    std::cout << "Query " << queryNo++ << " success." << std::endl;
+                    if(clnt->remoteCall<int>("add", 1, 1) == 2)
+                        ++successNum;
+                    if(clnt->remoteCall<int>("sub", 1, 1) == 0)
+                        ++successNum;
+                    if(clnt->remoteCall<std::string>("hello") == "hello, clnt!\nhahaha")
+                        ++successNum;
                 }
                 catch (const std::exception& e)
                 {
@@ -142,7 +142,7 @@ void testConcurrency_1(const std::string& ip, uint16_t port, int num_threads, in
                     clnts.emplace_back(std::move(clnt));
                 }
             }
-        }, std::ref(clnts_lock), std::ref(stdout_lock));
+        }, std::ref(clnts_lock));
 
         threads.emplace_back(std::move(t));
     }
@@ -151,4 +151,6 @@ void testConcurrency_1(const std::string& ip, uint16_t port, int num_threads, in
     {
         thread.join();
     }
+
+    std::cout << "Success query: " << successNum << std::endl;
 }
