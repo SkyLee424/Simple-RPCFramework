@@ -1,5 +1,5 @@
-#include "ServerSocket.hpp"
 #include "ThreadPool.h"
+#include "TCPSocket.hpp"
 #include "RPCFramework.hpp"
 #include <sys/epoll.h>
 #include <vector>
@@ -28,7 +28,7 @@ private:
 
     std::unordered_map<int, std::shared_ptr<TCPSocket>> clnts;
 
-    ServerSocket serverSock;
+    TCPSocket serverSock;
     RPCFramework framework;
     
     log4cplus::Logger logger;                                               // 记录除了错误日志的其它日志
@@ -110,7 +110,7 @@ void RPCServer::start(void)
         try
         {
             clnt.reset(serverSock.accept()); // 主线程处理连接请求
-            clnt_sock = clnt->getSocket();
+            clnt_sock = clnt->native_sock();
             // 设置为非阻塞 IO
             int flag = fcntl(clnt_sock, F_GETFL);
             flag |= O_NONBLOCK;
@@ -225,7 +225,7 @@ void doEpoll(RPCServer *server, int epfd)
             // When the client is destroyed, it will automatically close the socket
             for (const auto &closed_clnt : closed_clients)
             {
-                auto clnt_sock = closed_clnt->getSocket();
+                auto clnt_sock = closed_clnt->native_sock();
                 server->clnts.erase(clnt_sock);
                 if(epoll_ctl(epfd, EPOLL_CTL_DEL, clnt_sock, NULL) < 0)
                 {

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <iostream>
-#include "ServerSocket.hpp"
 #include "TCPSocket.hpp"
 #include "Serializer.hpp"
 #include "ProcedurePacket.hpp"
@@ -13,9 +12,9 @@ class RPCClient
     bool closed;
 public:
     RPCClient(const std::string &ip, uint16_t port)
-        : clnt(new TCPSocket(ip, port)), closed(false)
+        : clnt(new TCPSocket()), closed(false)
     {
-        clnt->connect();
+        clnt->connect(ip, port);
     }
 
     ~RPCClient()
