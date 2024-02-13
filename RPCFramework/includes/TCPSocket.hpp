@@ -12,8 +12,6 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include <iostream>
-
 sockaddr_in get_sockaddr_in(const std::string &ip, uint16_t port);
 
 class TCPSocket
@@ -50,27 +48,25 @@ public:
 
     int native_sock() const
     {return _native_sock;}
+
+private:
+    // 分配 socket
+    int initSocket(void);
 };
 
+// 不应该在这里调用 socket 创建套接字，存在文件描述符泄漏问题
 TCPSocket::TCPSocket()
-    :closed(false)
-{
-    _native_sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (_native_sock < 0)
-    {
-        std::string errorMsg(strerror(errno));
-        throw std::runtime_error("socket error: " + errorMsg);
-    }
-}
+    :_native_sock(-1), closed(false) {}
 
 TCPSocket::TCPSocket(const std::string &ip, uint16_t port, int backlog)
-    : TCPSocket() // 初始化套接字
+    : TCPSocket()
 {
     if (inet_addr(ip.c_str()) == INADDR_NONE)
         throw std::runtime_error("Illegal host");
     if (port < 0 || port > 0xffff)
         throw std::runtime_error("Illegal port");
 
+    _native_sock = initSocket();
     this->IP = ip;
     this->port = port;
 
@@ -85,7 +81,7 @@ TCPSocket::TCPSocket(const std::string &ip, uint16_t port, int backlog)
 
 TCPSocket::~TCPSocket()
 {
-    close();
+    // close();
 }
 
 void TCPSocket::bind(void)
@@ -129,6 +125,7 @@ TCPSocket *TCPSocket::accept(void)
 
 void TCPSocket::connect(const std::string &ip, uint16_t port)
 {
+    _native_sock = initSocket();
     sockaddr_in serv_addr = get_sockaddr_in(ip, port);
 
     // 将自己的 socketFd 与服务器的 IP:Port 绑定，并请求连接
@@ -214,4 +211,15 @@ sockaddr_in get_sockaddr_in(const std::string &ip, uint16_t port)
     address.sin_addr.s_addr = inet_addr(ip.c_str());
     address.sin_port = htons(port);
     return address;
+}
+
+int TCPSocket::initSocket(void)
+{
+    _native_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (_native_sock < 0)
+    {
+        std::string errorMsg(strerror(errno));
+        throw std::runtime_error("socket error: " + errorMsg);
+    }
+    return _native_sock;
 }
