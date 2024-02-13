@@ -2,6 +2,10 @@
 
 ----
 
+2024.02.13 更新：重写服务器架构，采用多 Reactor 多线程模型，QPS 较之前提升近一倍
+
+----
+
 9 月 12 日更新：几乎重写了服务器架构，仅采用一个 epoll 实例，解决了之前的段错误问题
 
 ---- 
@@ -18,7 +22,7 @@
 - **ReturnPacket.hpp**: 封装了返回结果
 - **Serializer.hpp**: 工具类，用于序列化和反序列化对象
 - **RPCFramework.hpp**: RPC 框架类，是 RPC 的核心
-- **RPCServer.hpp**: 服务端类，使用 ThreadPool + epoll 实现
+- **RPCServer.hpp**: 服务端类，基于多 Reactor 多线程模型
 - **RPCClient.hpp**: 客户端类，有一个核心模版成员函数 `remoteCall`
 
 ## 功能与特点
@@ -30,8 +34,9 @@
 
 ### 服务端部分
 
-- 使用 **ThreadPool + epoll** 处理客户端的请求
-- 使用 **shared_ptr** 管理客户端套接字，确保连接正确释放
+- 封装 TCPSocket、TaskQueue 类
+- 基于 **多 Reactor 多线程** 模型实现 Server 端
+- 使用 **epoll** 监听事件，TaskQueue 异步处理客户端的请求
 - 使用 log4cplus 记录日志
 
 ## 示例
@@ -139,6 +144,24 @@ void testBasicFeature(const std::string& ip, uint16_t port)
 注意编译的时候，C++ 标准大于等于 C++17，并且链接 log4cplus 和 pthread 库
 
 <!-- 这里可以补充并发量的测试结果 -->
+本地配置：
+
+Server 与 Client 共用一台虚拟机，虚拟机配置如下：
+
+- OS：CentOS7（Linux Kernel 3.10）
+- CPU：2 Core
+- Mem：4G
+
+Server 与 Client 均适用测试代码：
+
+- Server 采用 **一主一从** Reactor，从 Reactor 分配 8 个线程，backlog 为 60000
+- Client 使用 **测试方法二**，200 并发线程，单个线程发起 1000*3 个请求
+
+测试结果如下：
+
+![](images/截屏2024-02-13%2019.28.47.png)
+
+计算可知 **QPS 约为 21238**，较之前版本高出近一倍
 
 ## 注意事项
 
@@ -380,28 +403,29 @@ Serializer 工具类也已经上传到另一个 [仓库](https://github.com/SkyL
 
 整个服务端的架构如图所示：
 
-![](images/IMG_94D6F9B9C7F5-1.jpeg)
+![](images/截屏2024-02-13%2020.13.08.png)
 
 ### 工作流程
 
-#### 接受用户请求
+#### 接受用户连接请求
 
-接受用户请求这一步由主线程完成，在主线程中：
+接受用户连接请求这一步由 `主 Reactor` 完成：
 
-- 创建服务器，并创建一个 epoll 实例，将 epoll 实例传给任务函数 `doEpoll`
-- 主线程 accept 客户的请求，将客户端套接字存放在容器中
-- 主线程将客户的套接字添加到选择的 epoll 实例的感兴趣的事件中
+- `主 Reactor` accept 客户的请求
+- 选择活跃连接数最少的 `从 Reactor`，并将客户端套接字分配到该 Reactor 中
 
 #### 处理用户请求与返回调用结果
 
-处理用户请求与返回调用结果这一步由 `handle_thread` 完成，在 `handle_thread` 中：
+处理用户请求与返回调用结果这一步由 `从 Reactor` 完成：
 
-- epoll_wait 返回后，遍历 epoll_events，将用户请求传给工作线程
-- 工作线程在后台处理任务，并在处理完成后，返回调用结果
-  - 若用户提出释放连接的请求，工作线程会将用户的套接字加入到 `closed_clients` 中，由 `handle_thread` 统一关闭套接字和释放内存
-- `handle_thread` 等待这一轮 `epoll_wait` 的所有任务完成后，受理客户端的释放连接请求
+- epoll_wait 返回后，遍历 epoll_events：
+- 如果是读事件：
+  - 如果是关闭连接请求，关闭即可
+  - 否则，将用户请求扔到 TaskQueue
+- 如果是写事件，那么写入响应给客户端
 
-## 局限性
+虽然 socket 可以保证收到的顺序与客户端的请求顺序一致，但是我们应该按照相同的顺序处理，避免正常请求在关闭连接请求之后处理
 
-- 服务端的工作模式，主线程的工作压力很大，因为所有的连接请求都是通过主线程 accept 的
+TaskQueue 中的 Worker 会获取自己对应队列的请求，并处理，**保证单个 Client 请求的有序性**
 
+处理完毕后，worker 会注册写事件，让所属 `从 Reactor` 完成写入响应的操作
